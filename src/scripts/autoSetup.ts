@@ -1,3 +1,5 @@
+import { localClientConfig } from '@/utils/localClientConfig.js';
+import { writePrivateTextFileSecure } from '@/utils/envFile.js';
 /**
  * Auto-Setup Script for eBay API MCP Server
  *
@@ -10,13 +12,13 @@
  * Usage: npm run autoSetup (or runs automatically after npm install)
  */
 
-import { dirname, join } from 'path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir, platform } from 'os';
+import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 
 import { config } from 'dotenv';
 import { Effect, Either } from 'effect';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 import type { DetectedMCPClient, MCPServerConfig } from '@/utils/llmClientDetector.js';
 import { getErrorMessage } from '@/utils/errors.js';
 import { isRecord } from '@/utils/typeGuards.js';
@@ -120,7 +122,7 @@ function readExistingClientConfig(client: MCPClient): Record<string, unknown> {
 
   printWarning(`Invalid JSON in ${client.configPath}, creating backup and new config`);
   const backup = `${client.configPath}.backup.${Date.now()}`;
-  writeFileSync(backup, readFileSync(client.configPath));
+  writePrivateTextFileSecure(backup, readFileSync(client.configPath, 'utf-8'));
   printInfo(`Backup saved to: ${backup}`);
   return {};
 }
@@ -224,43 +226,7 @@ function detectMCPClients(): MCPClient[] {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function generateMCPServerConfig(): MCPServerConfig {
-  const buildPath = join(PROJECT_ROOT, 'build/index.js');
-
-  const envConfig: Record<string, string> = {
-    EBAY_CLIENT_ID: process.env.EBAY_CLIENT_ID || '',
-    EBAY_CLIENT_SECRET: process.env.EBAY_CLIENT_SECRET || '',
-    EBAY_ENVIRONMENT: process.env.EBAY_ENVIRONMENT || 'sandbox',
-  };
-  const config: MCPServerConfig = {
-    command: 'node',
-    args: [buildPath],
-    env: envConfig,
-  };
-
-  // Add optional environment variables if they exist
-  if (process.env.EBAY_REDIRECT_URI) {
-    envConfig.EBAY_REDIRECT_URI = process.env.EBAY_REDIRECT_URI;
-  }
-  if (process.env.EBAY_MARKETPLACE_ID) {
-    envConfig.EBAY_MARKETPLACE_ID = process.env.EBAY_MARKETPLACE_ID;
-  }
-  if (process.env.EBAY_CONTENT_LANGUAGE) {
-    envConfig.EBAY_CONTENT_LANGUAGE = process.env.EBAY_CONTENT_LANGUAGE;
-  }
-
-  if (process.env.EBAY_USER_ACCESS_TOKEN) {
-    envConfig.EBAY_USER_ACCESS_TOKEN = process.env.EBAY_USER_ACCESS_TOKEN;
-  }
-
-  if (process.env.EBAY_USER_REFRESH_TOKEN) {
-    envConfig.EBAY_USER_REFRESH_TOKEN = process.env.EBAY_USER_REFRESH_TOKEN;
-  }
-
-  if (process.env.EBAY_APP_ACCESS_TOKEN) {
-    envConfig.EBAY_APP_ACCESS_TOKEN = process.env.EBAY_APP_ACCESS_TOKEN;
-  }
-
-  return config;
+  return localClientConfig(PROJECT_ROOT);
 }
 
 function updateClientConfig(client: MCPClient, serverConfig: MCPServerConfig): boolean {
@@ -271,7 +237,7 @@ function updateClientConfig(client: MCPClient, serverConfig: MCPServerConfig): b
           // Ensure directory exists
           const configDir = dirname(client.configPath);
           if (!existsSync(configDir)) {
-            mkdirSync(configDir, { recursive: true });
+            mkdirSync(configDir, { recursive: true, mode: 0o700 });
           }
 
           const config = readExistingClientConfig(client);
@@ -313,8 +279,8 @@ function updateClientConfig(client: MCPClient, serverConfig: MCPServerConfig): b
               const mcpServers = readMcpServerConfigArray(experimental.modelContextProtocolServers);
 
               // Check if eBay server already exists and update/add
-              const existingIndex = mcpServers.findIndex(
-                (server) => server.command === 'node' && server.args?.[0]?.includes('ebay-mcp'),
+              const existingIndex = mcpServers.findIndex((server) =>
+                server.args?.[0]?.includes('ebay-mcp'),
               );
               if (existingIndex >= 0) {
                 mcpServers[existingIndex] = serverConfig;
@@ -339,7 +305,7 @@ function updateClientConfig(client: MCPClient, serverConfig: MCPServerConfig): b
           }
 
           // Write config
-          writeFileSync(client.configPath, JSON.stringify(config, null, 2));
+          writePrivateTextFileSecure(client.configPath, JSON.stringify(config, null, 2));
         },
         catch: (error) => error,
       }),

@@ -3,13 +3,19 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 const mockHomedir = '/home/testuser';
 
 // Mock fs and os modules
 vi.mock('fs');
+vi.mock('@/utils/logger.js', () => ({ setupLogger: { error: vi.fn() } }));
+vi.mock('@/utils/envFile.js', () => ({
+  // Filesystem behavior is covered with real temporary files by envFile.test.ts.
+  writePrivateTextFileSecure: (filePath: string, contents: string) =>
+    fs.writeFileSync(filePath, contents, { encoding: 'utf-8', mode: 0o600 }),
+}));
 vi.mock('os', () => ({
   homedir: vi.fn(() => '/home/testuser'),
   platform: vi.fn(() => 'darwin'),

@@ -14,34 +14,24 @@ import { z } from 'zod';
  */
 export const translateSchema = z.object({
   from: z
-    .string({
-      invalid_type_error: 'from must be a string',
-      description: 'The language of the input text to be translated (e.g., en_US, fr_FR, de_DE)',
-    })
+    .string({ error: 'from must be a string' })
+    .describe('The language of the input text to be translated (e.g., en_US, fr_FR, de_DE)')
     .optional(),
   to: z
-    .string({
-      invalid_type_error: 'to must be a string',
-      description: 'The target language for translation (e.g., en_US, fr_FR, de_DE)',
-    })
+    .string({ error: 'to must be a string' })
+    .describe('The target language for translation (e.g., en_US, fr_FR, de_DE)')
     .optional(),
   translationContext: z
-    .string({
-      invalid_type_error: 'translationContext must be a string',
-      description: 'The listing entity to translate (ITEM_TITLE or ITEM_DESCRIPTION)',
-    })
+    .string({ error: 'translationContext must be a string' })
+    .describe('The listing entity to translate (ITEM_TITLE or ITEM_DESCRIPTION)')
     .optional(),
   text: z
     .array(
-      z.string({
-        invalid_type_error: 'text array items must be strings',
-        description: 'Text string to translate',
-      }),
-      {
-        invalid_type_error: 'text must be an array',
-        description:
-          'Array of text to translate (max 1000 chars for ITEM_TITLE, 20,000 for ITEM_DESCRIPTION)',
-      },
+      z.string({ error: 'text array items must be strings' }).describe('Text string to translate'),
+      { error: 'text must be an array' },
+    )
+    .describe(
+      'Array of text to translate (max 1000 chars for ITEM_TITLE, 20,000 for ITEM_DESCRIPTION)',
     )
     .optional(),
 });

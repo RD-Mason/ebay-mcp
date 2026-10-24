@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { sanitizeToolResultForModel } from '@/utils/privacy.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -136,12 +137,12 @@ const asStructuredContent = (view: ViewModel): Record<string, unknown> =>
  * ```
  */
 export const buildUiToolResult = (ui: ResolvedToolUi, handlerOutput: unknown): CallToolResult => {
-  const view = ui.map(handlerOutput);
-  return {
+  const view = ui.map(sanitizeToolResultForModel(handlerOutput));
+  return sanitizeToolResultForModel({
     content: [{ type: 'text', text: summarizeView(view) }],
     structuredContent: asStructuredContent(view),
     _meta: { ui: { resourceUri: ui.resourceUri } },
-  };
+  });
 };
 
 /**

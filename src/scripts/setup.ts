@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 
-import { dirname, join } from 'path';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { homedir, platform } from 'os';
-import { randomUUID } from 'crypto';
-import type { Server } from 'http';
+import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import type { Server } from 'node:http';
 
 import chalk from 'chalk';
 import { Data, Effect, Either } from 'effect';
 import { checkForUpdates } from '@/utils/version.js';
 import { describeHttpError, httpRequest } from '@/utils/http.js';
 import { config } from 'dotenv';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 import { getOAuthAuthorizationUrl } from '@/config/environment.js';
 import { startCallbackServer } from '@/auth/oauthHelper.js';
 import { defineWizard, runWizard } from '@/scripts/setupWizard.js';
-import { quoteEnvValue } from '@/utils/envFile.js';
+import {
+  readEnvFileSecure,
+  writeEnvFileSecure,
+  writePrivateTextFileSecure,
+} from '@/utils/envFile.js';
 import { loadExistingConfig } from './setupShared.js';
 import { runSkillsWizard } from './skills.js';
 import prompts from 'prompts';
@@ -27,6 +31,7 @@ import type { EbayTokenCore } from '@/types/ebay.js';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isEntryModule } from '@/utils/entryModule.js';
+import { localClientConfig } from '@/utils/localClientConfig.js';
 
 config({ quiet: true });
 
@@ -275,9 +280,12 @@ async function fetchEbayUserInfo(
 function getClaudeDesktopConfigPath(): string {
   const home = homedir();
   const os = platform();
-  if (os === 'darwin')
+  if (os === 'darwin') {
     return join(home, 'Library/Application Support/Claude/claude_desktop_config.json');
-  if (os === 'win32') return join(home, 'AppData/Roaming/Claude/claude_desktop_config.json');
+  }
+  if (os === 'win32') {
+    return join(home, 'AppData/Roaming/Claude/claude_desktop_config.json');
+  }
   return join(home, '.config/Claude/claude_desktop_config.json');
 }
 
@@ -298,12 +306,13 @@ function isClaudeDesktopInstalled(): boolean {
  * @returns Update result with success state, config path, and optional error details.
  */
 function updateClaudeDesktopConfig(
-  envConfig: Record<string, string>,
+  _envConfig: Record<string, string>,
   environment: string,
 ): { success: boolean; configPath: string; error?: string; details?: string } {
   const configPath = getClaudeDesktopConfigPath();
-  if (!existsSync(dirname(configPath)))
+  if (!existsSync(dirname(configPath))) {
     return { success: false, configPath, error: 'Claude Desktop not installed' };
+  }
 
   const updated = Effect.runSync(
     Effect.either(
@@ -332,30 +341,12 @@ function updateClaudeDesktopConfig(
 
             existing = parsed.right;
           }
-          if (!existing.mcpServers || typeof existing.mcpServers !== 'object')
+          if (!existing.mcpServers || typeof existing.mcpServers !== 'object') {
             existing.mcpServers = {};
+          }
           const mcpServers = existing.mcpServers as Record<string, unknown>;
-          const envVars: Record<string, string> = { EBAY_ENVIRONMENT: environment };
-          if (envConfig.EBAY_CLIENT_ID) envVars.EBAY_CLIENT_ID = envConfig.EBAY_CLIENT_ID;
-          if (envConfig.EBAY_CLIENT_SECRET)
-            envVars.EBAY_CLIENT_SECRET = envConfig.EBAY_CLIENT_SECRET;
-          if (envConfig.EBAY_REDIRECT_URI) envVars.EBAY_REDIRECT_URI = envConfig.EBAY_REDIRECT_URI;
-          if (envConfig.EBAY_MARKETPLACE_ID)
-            envVars.EBAY_MARKETPLACE_ID = envConfig.EBAY_MARKETPLACE_ID;
-          if (envConfig.EBAY_CONTENT_LANGUAGE)
-            envVars.EBAY_CONTENT_LANGUAGE = envConfig.EBAY_CONTENT_LANGUAGE;
-          if (envConfig.EBAY_USER_REFRESH_TOKEN)
-            envVars.EBAY_USER_REFRESH_TOKEN = envConfig.EBAY_USER_REFRESH_TOKEN;
-          if (envConfig.EBAY_USER_ACCESS_TOKEN?.startsWith('v^'))
-            envVars.EBAY_USER_ACCESS_TOKEN = envConfig.EBAY_USER_ACCESS_TOKEN;
-          if (envConfig.EBAY_APP_ACCESS_TOKEN?.startsWith('v^'))
-            envVars.EBAY_APP_ACCESS_TOKEN = envConfig.EBAY_APP_ACCESS_TOKEN;
-          mcpServers.ebay = {
-            command: 'npx',
-            args: ['--yes', '--quiet', 'ebay-mcp'],
-            env: { ...envVars, NODE_NO_WARNINGS: '1', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
-          };
-          writeFileSync(configPath, JSON.stringify(existing, null, 2));
+          mcpServers.ebay = localClientConfig(PROJECT_ROOT, environment);
+          writePrivateTextFileSecure(configPath, JSON.stringify(existing, null, 2));
           const otherServers = Object.keys(mcpServers).filter(
             (serverName) => serverName !== 'ebay',
           );
@@ -384,46 +375,16 @@ function updateClaudeDesktopConfig(
   return updated.right;
 }
 
-function formatDate(date: Date): string {
-  return date.toLocaleString('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZoneName: 'short',
-  });
-}
-
 function saveConfig(envConfig: Record<string, string>, environment: string): void {
   const envPath = join(PROJECT_ROOT, '.env');
-  const marketplaceLine = envConfig.EBAY_MARKETPLACE_ID
-    ? `EBAY_MARKETPLACE_ID=${quoteEnvValue(envConfig.EBAY_MARKETPLACE_ID)}`
-    : '# EBAY_MARKETPLACE_ID=EBAY_US';
-  const contentLanguageLine = envConfig.EBAY_CONTENT_LANGUAGE
-    ? `EBAY_CONTENT_LANGUAGE=${quoteEnvValue(envConfig.EBAY_CONTENT_LANGUAGE)}`
-    : '# EBAY_CONTENT_LANGUAGE=en-US';
-  writeFileSync(
-    envPath,
-    `# eBay MCP Server Configuration
-# Last Updated: ${formatDate(new Date())}
-# Environment: ${environment}
-
-EBAY_CLIENT_ID=${quoteEnvValue(envConfig.EBAY_CLIENT_ID || '')}
-EBAY_CLIENT_SECRET=${quoteEnvValue(envConfig.EBAY_CLIENT_SECRET || '')}
-EBAY_REDIRECT_URI=${quoteEnvValue(envConfig.EBAY_REDIRECT_URI || '')}
-EBAY_ENVIRONMENT=${environment}
-${marketplaceLine}
-${contentLanguageLine}
-
-EBAY_USER_REFRESH_TOKEN=${quoteEnvValue(envConfig.EBAY_USER_REFRESH_TOKEN || '')}
-EBAY_USER_ACCESS_TOKEN=${quoteEnvValue(envConfig.EBAY_USER_ACCESS_TOKEN || '')}
-EBAY_APP_ACCESS_TOKEN=${quoteEnvValue(envConfig.EBAY_APP_ACCESS_TOKEN || '')}
-`,
-    'utf-8',
-  );
+  writeEnvFileSecure(envPath, {
+    ...readEnvFileSecure(envPath),
+    ...envConfig,
+    EBAY_ENVIRONMENT: environment,
+    EBAY_READ_ONLY: 'true',
+    EBAY_MCP_REDACT_PII: 'true',
+    EBAY_MCP_CHECK_UPDATES: 'false',
+  });
 }
 
 function showInfo(message: string): void {
@@ -450,10 +411,10 @@ function showBox(title: string, content: string[]): void {
   );
   for (const contentLine of content) {
     const displayLine =
-      contentLine.length > width - 2 ? contentLine.slice(0, width - 5) + '...' : contentLine;
+      contentLine.length > width - 2 ? `${contentLine.slice(0, width - 5)}...` : contentLine;
     console.log(`  ${ui.dim('│')} ${displayLine.padEnd(width)}${ui.dim('│')}`);
   }
-  console.log(`  ${ui.dim('└' + line + '┘')}\n`);
+  console.log(`  ${ui.dim(`└${line}┘`)}\n`);
 }
 
 function showSetupProgress(message: string): () => void {
@@ -570,8 +531,9 @@ async function completeOAuthWithCode(
   } else {
     const userMsg = describeHttpError(user.left, 'Unknown');
     showWarning(`Could not fetch account info: ${userMsg}`);
-    if (userMsg.toLowerCase().includes('access denied'))
+    if (userMsg.toLowerCase().includes('access denied')) {
       showInfo('Normal if RuName lacks commerce.identity.readonly scope — tokens are valid.');
+    }
   }
 
   const appToken = await Effect.runPromise(
@@ -605,8 +567,12 @@ async function completeOAuthWithCode(
     );
     if (desktopUpdate.success) {
       showSuccess('Claude Desktop config updated.');
-      if (desktopUpdate.details) showInfo(desktopUpdate.details);
-    } else showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+      if (desktopUpdate.details) {
+        showInfo(desktopUpdate.details);
+      }
+    } else {
+      showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+    }
   }
 }
 
@@ -737,7 +703,7 @@ export const runSetup = async (): Promise<void> => {
         description: existingConfig.EBAY_CLIENT_SECRET
           ? 'Press Enter to keep existing secret'
           : 'From https://developer.ebay.com/my/keys',
-        required: existingConfig.EBAY_CLIENT_SECRET ? false : true,
+        required: !existingConfig.EBAY_CLIENT_SECRET,
       },
       {
         id: 'redirect-uri',
@@ -828,13 +794,18 @@ export const runSetup = async (): Promise<void> => {
         const clean = String(answer)
           .trim()
           .replace(/^["']|["']$/g, '');
-        if (!clean) return 'Token is required';
-        if (!clean.startsWith('v^1.1#')) return 'Token should start with v^1.1#';
+        if (!clean) {
+          return 'Token is required';
+        }
+        if (!clean.startsWith('v^1.1#')) {
+          return 'Token should start with v^1.1#';
+        }
       }
       if (stepId === 'oauth-code') {
         const code = parseAuthorizationCode(String(answer));
-        if (!code)
+        if (!code) {
           return 'Could not find authorization code. Paste the full redirect URL or the code parameter.';
+        }
       }
       return null;
     },
@@ -908,15 +879,21 @@ export const runSetup = async (): Promise<void> => {
                 );
                 if (desktopUpdate.success) {
                   showSuccess('Claude Desktop config updated.');
-                  if (desktopUpdate.details) showInfo(desktopUpdate.details);
-                } else showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+                  if (desktopUpdate.details) {
+                    showInfo(desktopUpdate.details);
+                  }
+                } else {
+                  showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+                }
               }
             } else {
               const msg = describeHttpError(verified.left, 'Unknown error');
               showError(`Token verification failed: ${msg}`);
-              if (msg.toLowerCase().includes('access denied'))
+              if (msg.toLowerCase().includes('access denied')) {
                 showWarning('Token may be missing required OAuth scopes.');
-              else showWarning('Existing token may be expired or invalid.');
+              } else {
+                showWarning('Existing token may be expired or invalid.');
+              }
               showInfo('Continuing with existing token — re-run setup to refresh it.');
               tokens.refreshToken = existingConfig.EBAY_USER_REFRESH_TOKEN;
             }
@@ -1105,8 +1082,12 @@ export const runSetup = async (): Promise<void> => {
             );
             if (desktopUpdate.success) {
               showSuccess('Claude Desktop config updated.');
-              if (desktopUpdate.details) showInfo(desktopUpdate.details);
-            } else showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+              if (desktopUpdate.details) {
+                showInfo(desktopUpdate.details);
+              }
+            } else {
+              showWarning(`Could not update Claude Desktop: ${desktopUpdate.error}`);
+            }
           }
         } else {
           const msg = describeHttpError(verified.left, 'Unknown error');
@@ -1119,7 +1100,9 @@ export const runSetup = async (): Promise<void> => {
       // ── oauth-code: exchange authorization code for tokens ─────────────────
       if (stepId === 'oauth-code') {
         const authCode = parseAuthorizationCode(String(answer));
-        if (!authCode) return;
+        if (!authCode) {
+          return;
+        }
         await completeOAuthWithCode(
           authCode,
           {
@@ -1139,13 +1122,18 @@ export const runSetup = async (): Promise<void> => {
         const selectedNames = answer as string[];
         for (const name of selectedNames) {
           const client = detectedClients.find((detected) => detected.name === name);
-          if (!client) continue;
+          if (!client) {
+            continue;
+          }
           const stopSpinner = showSetupProgress(`Configuring ${client.displayName}...`);
           await sleep(400);
           const success = configureLLMClient(client.name, PROJECT_ROOT);
           stopSpinner();
-          if (success) showSuccess(`Configured ${client.displayName}`);
-          else showError(`Failed to configure ${client.displayName}`);
+          if (success) {
+            showSuccess(`Configured ${client.displayName}`);
+          } else {
+            showError(`Failed to configure ${client.displayName}`);
+          }
         }
       }
     },
@@ -1209,12 +1197,12 @@ export const runSetup = async (): Promise<void> => {
   ]);
 
   console.log(ui.bold.cyan('\n  📋 Quick Reference\n'));
-  console.log('  ' + ui.dim('─'.repeat(56)));
+  console.log(`  ${ui.dim('─'.repeat(56))}`);
   console.log(`  ${ui.bold('Start MCP Server:')}     ${ui.info('npm start')}`);
   console.log(`  ${ui.bold('Run Diagnostics:')}      ${ui.info('npm run diagnose')}`);
   console.log(`  ${ui.bold('View Logs:')}            ${ui.info('npm run dev')}`);
   console.log(`  ${ui.bold('Run Tests:')}            ${ui.info('npm test')}`);
-  console.log('  ' + ui.dim('─'.repeat(56)));
+  console.log(`  ${ui.dim('─'.repeat(56))}`);
 
   console.log(ui.bold.cyan('\n  🚀 Next Steps\n'));
   console.log('  1. Restart your MCP client (Claude Desktop, etc.)');

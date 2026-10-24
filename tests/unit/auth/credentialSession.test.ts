@@ -1,4 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -17,6 +27,7 @@ import {
   maskToken,
 } from '@/auth/credentialSession.js';
 import { CREDENTIAL_ENV_PATH, resolveCredentialEnvPath } from '@/config/credentialFile.js';
+import process from 'node:process';
 
 describe('credential session', () => {
   let tempDir: string | undefined;
@@ -49,6 +60,69 @@ describe('credential session', () => {
       EBAY_USER_ACCESS_TOKEN: 'access',
       EBAY_USER_REFRESH_TOKEN: 'refresh',
     });
+  });
+
+  it('creates a private file and tightens an existing permissive file', () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'ebay-private-store-'));
+    const envPath = path.join(tempDir, '.env');
+    const store = new DotEnvCredentialStore(() => envPath);
+    Effect.runSync(store.write({ EBAY_USER_ACCESS_TOKEN: 'first-access' }));
+    if (process.platform !== 'win32') {
+      expect(statSync(envPath).mode & 0o777).toBe(0o600);
+      chmodSync(envPath, 0o644);
+    }
+    const previousInode = statSync(envPath).ino;
+    Effect.runSync(store.write({ EBAY_USER_REFRESH_TOKEN: 'next-refresh' }));
+    if (process.platform !== 'win32') {
+      expect(statSync(envPath).mode & 0o777).toBe(0o600);
+      expect(statSync(envPath).ino).not.toBe(previousInode);
+    }
+    expect(readdirSync(tempDir)).toEqual(['.env']);
+    expect(dotenv.parse(readFileSync(envPath, 'utf-8'))).toEqual({
+      EBAY_USER_ACCESS_TOKEN: 'first-access',
+      EBAY_USER_REFRESH_TOKEN: 'next-refresh',
+    });
+  });
+
+  it.each([
+    { EBAY_USER_REFRESH_TOKEN: 'refresh\nEBAY_READ_ONLY=false' },
+    { EBAY_USER_ACCESS_TOKEN: 'access\rNODE_OPTIONS=--inspect' },
+    { EBAY_APP_ACCESS_TOKEN: 'access\0suffix' },
+    { EBAY_READ_ONLY: 'false' },
+    { NODE_OPTIONS: '--inspect' },
+    { 'EBAY_USER_ACCESS_TOKEN\nNODE_OPTIONS': '--inspect' },
+  ])('refuses token/configuration injection without replacing the existing file', (updates) => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'ebay-injection-store-'));
+    const envPath = path.join(tempDir, '.env');
+    const originalContent = 'EBAY_CLIENT_ID=client\nEBAY_USER_ACCESS_TOKEN=good';
+    writeFileSync(envPath, originalContent, { mode: 0o600 });
+    const store = new DotEnvCredentialStore(() => envPath);
+    expect(() => Effect.runSync(store.write(updates))).toThrow('Failed to write credential');
+    expect(readFileSync(envPath, 'utf-8')).toBe(originalContent);
+    expect(readdirSync(tempDir)).toEqual(['.env']);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink without touching its target', () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'ebay-symlink-store-'));
+    const envPath = path.join(tempDir, '.env');
+    const targetPath = path.join(tempDir, 'unrelated');
+    writeFileSync(targetPath, 'UNRELATED=keep', { mode: 0o644 });
+    symlinkSync(targetPath, envPath);
+    const store = new DotEnvCredentialStore(() => envPath);
+    expect(() => Effect.runSync(store.write({ EBAY_USER_ACCESS_TOKEN: 'access' }))).toThrow();
+    expect(readFileSync(targetPath, 'utf-8')).toBe('UNRELATED=keep');
+    expect(statSync(targetPath).mode & 0o777).toBe(0o644);
+  });
+
+  it('refuses hard links rather than changing another file permissions', () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'ebay-hardlink-store-'));
+    const targetPath = path.join(tempDir, 'unrelated');
+    const envPath = path.join(tempDir, '.env');
+    writeFileSync(targetPath, 'UNRELATED=keep', { mode: 0o644 });
+    linkSync(targetPath, envPath);
+    const store = new DotEnvCredentialStore(() => envPath);
+    expect(() => Effect.runSync(store.write({ EBAY_USER_ACCESS_TOKEN: 'access' }))).toThrow();
+    expect(readFileSync(targetPath, 'utf-8')).toBe('UNRELATED=keep');
   });
 
   it('resolves the credential file from the installed package root (issue #157)', () => {

@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { EbaySellerApi } from '@/api/ebaySellerApi.js';
-import { createEbayMcpRuntime } from '@/mcp/runtime.js';
+import { createContractRuntime as createEbayMcpRuntime } from '../support/contractRuntime.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import { Effect } from 'effect';
 import nock from 'nock';
@@ -91,12 +91,11 @@ it('calls the create endpoint with the validated policy body', async () => {
   });
 
   expect(endpoint.isDone()).toBe(true);
-  expect(createResult.content).toEqual([
-    {
-      type: 'text',
-      text: JSON.stringify({ fulfillmentPolicyId: 'FP123' }, null, 2),
-    },
-  ]);
+  expect(createResult.content).toHaveLength(1);
+  const [createdBlock] = createResult.content;
+  expect(createdBlock.type === 'text' ? JSON.parse(createdBlock.text) : undefined).toEqual({
+    fulfillmentPolicyId: 'FP123',
+  });
 });
 
 it('calls the update endpoint with the ID in the path and policy in the body', async () => {
@@ -110,10 +109,9 @@ it('calls the update endpoint with the ID in the path and policy in the body', a
   });
 
   expect(endpoint.isDone()).toBe(true);
-  expect(updateResult.content).toEqual([
-    {
-      type: 'text',
-      text: JSON.stringify({ fulfillmentPolicyId: 'FP123' }, null, 2),
-    },
-  ]);
+  expect(updateResult.content).toHaveLength(1);
+  const [updatedBlock] = updateResult.content;
+  expect(updatedBlock.type === 'text' ? JSON.parse(updatedBlock.text) : undefined).toEqual({
+    fulfillmentPolicyId: 'FP123',
+  });
 });

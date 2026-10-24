@@ -13,10 +13,10 @@
  * - Post-setup quick start guide
  *
  * Usage:
- *   npx ebay-mcp                         Interactive setup wizard
- *   npx ebay-mcp --help                  Show help
- *   npx ebay-mcp --diagnose              Run diagnostics
- *   npx ebay-mcp --first-time            First-time developer guide
+ *   node build/scripts/interactiveSetup.js                         Interactive setup wizard
+ *   node build/scripts/interactiveSetup.js --help                  Show help
+ *   node build/scripts/interactiveSetup.js --diagnose              Run diagnostics
+ *   node build/scripts/interactiveSetup.js --first-time            First-time developer guide
  */
 
 /* eslint-disable @typescript-eslint/naming-convention */
@@ -26,9 +26,10 @@
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { Effect, Either } from 'effect';
-import { writeFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { writeFileSync } from 'node:fs';
+import { readEnvFileSecure, writeEnvFileSecure } from '@/utils/envFile.js';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   runSecurityChecks,
   displaySecurityResults,
@@ -104,7 +105,7 @@ function parseInteractiveArgs(): CLIArgs {
 function showInteractiveHelp() {
   console.log(chalk.bold.cyan('\n📖 eBay API MCP Server Setup Help\n'));
   console.log(chalk.white('Usage:'));
-  console.log(chalk.gray('  npx ebay-mcp [options]\n'));
+  console.log(chalk.gray('  node build/scripts/interactiveSetup.js [options]\n'));
   console.log(chalk.white('Options:'));
   console.log(chalk.yellow('  --help, -h           ') + chalk.gray('Show this help message'));
   console.log(chalk.yellow('  --diagnose, -d       ') + chalk.gray('Run system diagnostics'));
@@ -121,10 +122,20 @@ function showInteractiveHelp() {
     chalk.yellow('  (no options)         ') + chalk.gray('Run interactive setup wizard\n'),
   );
   console.log(chalk.white('Examples:'));
-  console.log(chalk.gray('  npx ebay-mcp                     # Interactive wizard'));
-  console.log(chalk.gray('  npx ebay-mcp --first-time        # First-time guide'));
-  console.log(chalk.gray('  npx ebay-mcp --diagnose          # Run diagnostics'));
-  console.log(chalk.gray('  npx ebay-mcp --env=production    # Setup for production\n'));
+  console.log(
+    chalk.gray('  node build/scripts/interactiveSetup.js                     # Interactive wizard'),
+  );
+  console.log(
+    chalk.gray('  node build/scripts/interactiveSetup.js --first-time        # First-time guide'),
+  );
+  console.log(
+    chalk.gray('  node build/scripts/interactiveSetup.js --diagnose          # Run diagnostics'),
+  );
+  console.log(
+    chalk.gray(
+      '  node build/scripts/interactiveSetup.js --env=production    # Setup for production\n',
+    ),
+  );
   console.log(chalk.white('Learn more:'));
   console.log(chalk.blue('  https://github.com/YosefHayim/ebay-mcp#readme\n'));
 }
@@ -170,45 +181,15 @@ function validateRequired(input: string): boolean | string {
 function generateEnvFile(config: Record<string, string>, environment: string): void {
   const envPath = join(PROJECT_ROOT, `.env${environment === 'sandbox' ? '' : `.${environment}`}`);
 
-  const content = `# eBay API MCP Server Configuration
-# Generated on ${new Date().toISOString()}
-# Environment: ${environment}
-
-# ═══════════════════════════════════════════════════════════════════
-# eBay App Credentials (Required)
-# ═══════════════════════════════════════════════════════════════════
-
-EBAY_CLIENT_ID=${config.EBAY_CLIENT_ID || 'your_client_id_here'}
-EBAY_CLIENT_SECRET=${config.EBAY_CLIENT_SECRET || 'your_client_secret_here'}
-EBAY_REDIRECT_URI=${config.EBAY_REDIRECT_URI || 'http://localhost:3000/oauth/callback'}
-
-# ═══════════════════════════════════════════════════════════════════
-# Environment (sandbox or production)
-# ═══════════════════════════════════════════════════════════════════
-
-EBAY_ENVIRONMENT=${config.EBAY_ENVIRONMENT || 'sandbox'}
-# Optional: e.g. EBAY_US, EBAY_DE, EBAY_FR
-EBAY_MARKETPLACE_ID=${config.EBAY_MARKETPLACE_ID || ''}
-# Optional: e.g. en-US, de-DE, fr-FR
-EBAY_CONTENT_LANGUAGE=${config.EBAY_CONTENT_LANGUAGE || ''}
-
-# ═══════════════════════════════════════════════════════════════════
-# User Tokens (Auto-generated from refresh token)
-# ═══════════════════════════════════════════════════════════════════
-# The refresh token is the only token you need to provide manually.
-# Access tokens are automatically generated and refreshed.
-
-EBAY_USER_REFRESH_TOKEN=${config.EBAY_USER_REFRESH_TOKEN || ''}
-EBAY_USER_ACCESS_TOKEN=${config.EBAY_USER_ACCESS_TOKEN || ''}
-EBAY_APP_ACCESS_TOKEN=${config.EBAY_APP_ACCESS_TOKEN || ''}
-
-# ═══════════════════════════════════════════════════════════════════
-# Logging (Optional)
-# ═══════════════════════════════════════════════════════════════════
-LOG_LEVEL=${config.LOG_LEVEL || 'info'}
-`;
-
-  writeFileSync(envPath, content, 'utf-8');
+  writeEnvFileSecure(envPath, {
+    ...readEnvFileSecure(envPath),
+    ...config,
+    EBAY_ENVIRONMENT: environment,
+    EBAY_LOG_LEVEL: config.LOG_LEVEL || 'info',
+    EBAY_READ_ONLY: 'true',
+    EBAY_MCP_REDACT_PII: 'true',
+    EBAY_MCP_CHECK_UPDATES: 'false',
+  });
   console.log(chalk.green(`✓ Configuration saved to ${envPath}`));
 }
 
@@ -413,7 +394,7 @@ async function detectAndConfigureLLMClients(): Promise<void> {
     const topBorder =
       chalk.gray('┌─') +
       chalk.white(client.displayName) +
-      chalk.gray('─'.repeat(boxWidth - client.displayName.length - 3) + '┐');
+      chalk.gray(`${'─'.repeat(boxWidth - client.displayName.length - 3)}┐`);
 
     console.log(topBorder);
 
@@ -450,7 +431,7 @@ async function detectAndConfigureLLMClients(): Promise<void> {
     const maxPathLength = boxWidth - 14;
     let displayPath = client.configPath;
     if (displayPath.length > maxPathLength) {
-      displayPath = '...' + displayPath.substring(displayPath.length - maxPathLength + 3);
+      displayPath = `...${displayPath.substring(displayPath.length - maxPathLength + 3)}`;
     }
     console.log(
       chalk.gray('│ ') +
@@ -460,7 +441,7 @@ async function detectAndConfigureLLMClients(): Promise<void> {
         chalk.gray('│'),
     );
 
-    console.log(chalk.gray('└' + '─'.repeat(boxWidth - 1) + '┘\n'));
+    console.log(chalk.gray(`└${'─'.repeat(boxWidth - 1)}┘\n`));
   }
 
   // Ask user which clients to configure
@@ -508,7 +489,9 @@ async function detectAndConfigureLLMClients(): Promise<void> {
 
   for (const clientName of clientSelection.selectedClients) {
     const client = detectedClients.find((detected) => detected.name === clientName);
-    if (!client) continue;
+    if (!client) {
+      continue;
+    }
 
     console.log(chalk.cyan(`Configuring ${client.displayName}...`));
 

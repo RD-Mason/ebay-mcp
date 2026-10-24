@@ -5,7 +5,8 @@ import nock from 'nock';
 import process from 'node:process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EbaySellerApi } from '@/api/ebaySellerApi.js';
-import { createEbayMcpRuntime, type EbayMcpRuntime } from '@/mcp/runtime.js';
+import type { EbayMcpRuntime } from '@/mcp/runtime.js';
+import { createContractRuntime as createEbayMcpRuntime } from '../support/contractRuntime.js';
 import type { EbayConfig } from '@/types/ebay.js';
 
 const mockOAuthClient = {

@@ -44,6 +44,9 @@ export type ToolFamilyKey = (typeof TOOL_FAMILY_KEYS)[number];
 
 const FAMILY_KEY_SET: ReadonlySet<string> = new Set(TOOL_FAMILY_KEYS);
 
+/** Minimal stock/category queries; customer, research, and admin tools are opt-in. */
+export const DEFAULT_TOOL_FAMILIES = ['inventory', 'metadata', 'taxonomy', 'stores'];
+
 /**
  * How the server gates which tools it advertises, resolved from `EBAY_MCP_TOOLS`:
  *
@@ -88,7 +91,10 @@ const parseFamilyTokens = (raw: string): string[] =>
  */
 export const resolveToolGatingMode = (env: NodeJS.ProcessEnv = process.env): ToolGatingMode => {
   const raw = env.EBAY_MCP_TOOLS?.trim();
-  if (!raw || raw.toLowerCase() === 'all') {
+  if (!raw) {
+    return { kind: 'static', families: [...DEFAULT_TOOL_FAMILIES] };
+  }
+  if (raw.toLowerCase() === 'all') {
     return { kind: 'all' };
   }
   if (raw.toLowerCase() === 'dynamic') {

@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import nock from 'nock';
 import dotenv from 'dotenv';
-import * as fs from 'fs';
-import type * as FsModule from 'fs';
 import { mkdtempSync, promises as fsPromises, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -16,13 +14,14 @@ import type { EbayConfig } from '@/types/ebay.js';
 import { mockOAuthTokenEndpoint, cleanupMocks } from '@tests/helpers/mockHttp.js';
 import process from 'node:process';
 import { Effect } from 'effect';
+import { stringifyEnv, writeEnvFileSecure } from '@/utils/envFile.js';
 
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof FsModule>('fs');
+vi.mock('@/utils/envFile.js', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/envFile.js')>('@/utils/envFile.js');
 
   return {
     ...actual,
-    writeFileSync: vi.fn(),
+    writeEnvFileSecure: vi.fn(),
   };
 });
 
@@ -335,6 +334,20 @@ describe('EbayOAuthClient', () => {
   });
 
   describe('setUserTokens', () => {
+    it.each([
+      ['access\nEBAY_READ_ONLY=false', 'refresh'],
+      ['access', 'refresh\rNODE_OPTIONS=--inspect'],
+      ['access\0suffix', 'refresh'],
+      ['', 'refresh'],
+    ])('rejects malformed tokens before caching them', async (accessToken, refreshToken) => {
+      await expectOAuthFailure(oauthClient.setUserTokens(accessToken, refreshToken), {
+        operation: 'setUserTokens',
+        message: 'non-empty single-line strings',
+      });
+      expect(oauthClient.hasUserTokens()).toBe(false);
+      expect(writeEnvFileSecure).not.toHaveBeenCalled();
+    });
+
     it('store user tokens in memory', async () => {
       const accessToken = 'user_access_token';
       const refreshToken = 'user_refresh_token';
@@ -408,13 +421,83 @@ describe('EbayOAuthClient', () => {
   });
 
   describe('clearAllTokens', () => {
-    it('clear all tokens from memory', async () => {
+    it('clears tokens from memory and persists empty local token fields', async () => {
       // Set tokens first
       await setUserTokens(oauthClient, 'access_token', 'refresh_token');
       expect(oauthClient.hasUserTokens()).toBe(true);
 
       await oauthClient.clearAllTokens();
 
+      expect(oauthClient.hasUserTokens()).toBe(false);
+      expect(writeEnvFileSecure).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          EBAY_USER_ACCESS_TOKEN: '',
+          EBAY_USER_REFRESH_TOKEN: '',
+          EBAY_APP_ACCESS_TOKEN: '',
+        }),
+      );
+    });
+
+    it('does not reload the original runtime config token after clearing', async () => {
+      oauthClient = new EbayOAuthClient({ ...config, refreshToken: 'original-refresh' });
+      await setUserTokens(oauthClient, 'access', 'original-refresh');
+      oauthClient.clearAllTokens();
+      await initializeOAuthClient(oauthClient);
+      expect(oauthClient.hasUserTokens()).toBe(false);
+    });
+
+    it('clears persisted tokens while preserving application keys and other settings', async () => {
+      const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'ebay-token-clear-'));
+      const envPath = path.join(temporaryDirectory, '.env');
+      try {
+        await fsPromises.writeFile(
+          envPath,
+          stringifyEnv({
+            EBAY_CLIENT_ID: 'fake-client-id',
+            EBAY_CLIENT_SECRET: 'fake-client-secret',
+            EBAY_ENVIRONMENT: 'sandbox',
+            EBAY_USER_ACCESS_TOKEN: 'old-access',
+            EBAY_USER_REFRESH_TOKEN: 'old-refresh',
+            EBAY_APP_ACCESS_TOKEN: 'old-app',
+          }),
+        );
+        oauthClient = new EbayOAuthClient(config, new DotEnvCredentialStore(() => envPath));
+        const actualEnvFile =
+          await vi.importActual<typeof import('@/utils/envFile.js')>('@/utils/envFile.js');
+        vi.mocked(writeEnvFileSecure).mockImplementationOnce(actualEnvFile.writeEnvFileSecure);
+        oauthClient.clearAllTokens();
+        expect(dotenv.parse(await fsPromises.readFile(envPath, 'utf-8'))).toEqual({
+          EBAY_CLIENT_ID: 'fake-client-id',
+          EBAY_CLIENT_SECRET: 'fake-client-secret',
+          EBAY_ENVIRONMENT: 'sandbox',
+          EBAY_USER_ACCESS_TOKEN: '',
+          EBAY_USER_REFRESH_TOKEN: '',
+          EBAY_APP_ACCESS_TOKEN: '',
+        });
+      } finally {
+        rmSync(temporaryDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it('reports a failed disk clear while still discarding in-memory tokens', async () => {
+      let failWrite = false;
+      const credentialStore: CredentialStore = {
+        write: () =>
+          failWrite
+            ? Effect.fail(
+                new CredentialStoreError({
+                  envPath: '/private-test/.env',
+                  message: 'Credential file could not be cleared',
+                  cause: undefined,
+                }),
+              )
+            : Effect.void,
+      };
+      oauthClient = new EbayOAuthClient(config, credentialStore);
+      await setUserTokens(oauthClient, 'access', 'refresh');
+      failWrite = true;
+      expect(() => oauthClient.clearAllTokens()).toThrow('could not be cleared');
       expect(oauthClient.hasUserTokens()).toBe(false);
     });
   });
@@ -459,10 +542,10 @@ describe('EbayOAuthClient', () => {
     let originalCwd: string;
     let tempDir: string;
 
-    const writeFileSyncMock = vi.mocked(fs.writeFileSync);
+    const secureWriteMock = vi.mocked(writeEnvFileSecure);
 
     /**
-     * Locate the most recent fs.writeFileSync call targeting `.env`
+     * Locate the most recent secure credential write targeting `.env`
      * and return its parsed content. Used to verify token persistence.
      */
     const getLastEnvWrite = (): {
@@ -470,17 +553,16 @@ describe('EbayOAuthClient', () => {
       content: string;
       parsed: Record<string, string>;
     } => {
-      const envWrite = [...writeFileSyncMock.mock.calls]
+      const envWrite = [...secureWriteMock.mock.calls]
         .reverse()
         .find(([filePath]) => String(filePath).endsWith(`${path.sep}.env`));
 
       expect(envWrite).toBeDefined();
 
-      const [filePath, content] = envWrite!;
+      const [filePath, envFields] = envWrite!;
       expect(String(filePath)).toMatch(/[\\/]\.env$/);
-      expect(typeof content).toBe('string');
 
-      const envContent = content as string;
+      const envContent = stringifyEnv(envFields);
       return {
         filePath: String(filePath),
         content: envContent,
@@ -496,13 +578,13 @@ describe('EbayOAuthClient', () => {
         config,
         new DotEnvCredentialStore(() => path.join(tempDir, '.env')),
       );
-      writeFileSyncMock.mockClear();
+      secureWriteMock.mockClear();
     });
 
     afterEach(() => {
       process.chdir(originalCwd);
       rmSync(tempDir, { recursive: true, force: true });
-      writeFileSyncMock.mockClear();
+      secureWriteMock.mockClear();
     });
 
     it('exchangeCodeForToken persists both access and refresh tokens to .env (issue #113)', async () => {
@@ -533,7 +615,7 @@ describe('EbayOAuthClient', () => {
         message: 'did not include a non-empty refresh_token',
       });
 
-      const envWrite = [...writeFileSyncMock.mock.calls].find(([filePath]) =>
+      const envWrite = [...secureWriteMock.mock.calls].find(([filePath]) =>
         String(filePath).endsWith(`${path.sep}.env`),
       );
       expect(envWrite).toBeUndefined();
@@ -545,7 +627,7 @@ describe('EbayOAuthClient', () => {
         new DotEnvCredentialStore(() => path.join(tempDir, '.env')),
       );
       await setUserTokens(oauthClient, 'old_access_token', 'in_memory_refresh');
-      writeFileSyncMock.mockClear();
+      secureWriteMock.mockClear();
 
       mockOAuthTokenEndpoint('sandbox', {
         access_token: 'new_access_token',
@@ -566,7 +648,7 @@ describe('EbayOAuthClient', () => {
         new DotEnvCredentialStore(() => path.join(tempDir, '.env')),
       );
       await setUserTokens(oauthClient, 'old_access_token', 'fresh_oauth_refresh');
-      writeFileSyncMock.mockClear();
+      secureWriteMock.mockClear();
 
       mockOAuthTokenEndpoint('sandbox', {
         access_token: 'new_access_token',
@@ -591,7 +673,7 @@ describe('EbayOAuthClient', () => {
         'EBAY_USER_REFRESH_TOKEN=same_refresh\nEBAY_USER_ACCESS_TOKEN=old_access\n',
       );
       await setUserTokens(oauthClient, 'old_access_token', 'same_refresh');
-      writeFileSyncMock.mockClear();
+      secureWriteMock.mockClear();
 
       mockOAuthTokenEndpoint('sandbox', {
         access_token: 'new_access_token',

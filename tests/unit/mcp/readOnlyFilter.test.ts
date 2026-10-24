@@ -17,8 +17,9 @@ describe('isReadOnlyModeEnabled', () => {
     ['false', false],
     ['0', false],
     ['no', false],
-    ['', false],
-    [undefined, false],
+    ['', true],
+    [undefined, true],
+    ['typo', true],
   ] as const)('EBAY_READ_ONLY=%j → %s', (raw, expected) => {
     const env: NodeJS.ProcessEnv = raw === undefined ? {} : { EBAY_READ_ONLY: raw as string };
     expect(isReadOnlyModeEnabled(env)).toBe(expected);
@@ -31,8 +32,11 @@ describe('isReadOnlyTool', () => {
     annotations?: ReadOnlyToolDefinition['annotations'],
   ): ReadOnlyToolDefinition => ({ name, annotations });
 
-  it('honors readOnlyHint=true over name heuristics', () => {
-    expect(isReadOnlyTool(def('ebay_create_campaign', { readOnlyHint: true }))).toBe(true);
+  it('does not let a misleading readOnlyHint override a write verb', () => {
+    expect(isReadOnlyTool(def('ebay_create_campaign', { readOnlyHint: true }))).toBe(false);
+    expect(
+      isReadOnlyTool(def('ebay_get_campaigns', { readOnlyHint: true, destructiveHint: true })),
+    ).toBe(false);
   });
 
   it('honors readOnlyHint=false over name heuristics', () => {
@@ -101,7 +105,7 @@ describe('isReadOnlyTool', () => {
 });
 
 describe('isReadOnlyTool against full registry', () => {
-  it('keeps every annotated readOnlyHint=true tool', () => {
+  it('keeps the current read-only annotations when they do not contradict write verbs', () => {
     const annotatedReadOnly = getToolDefinitions().filter(
       (definition) => definition.annotations?.readOnlyHint === true,
     );

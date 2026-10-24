@@ -263,6 +263,43 @@ describe('EbayApiClient Unit Tests', () => {
     });
   });
 
+  describe('credential destination and replay protection', () => {
+    it.each([
+      'https://api.ebay.com.evil.test/steal',
+      'https://evil.test/steal',
+      'http://api.sandbox.ebay.com/steal',
+    ])('rejects %s before acquiring credentials or sending a request', async (target) => {
+      await expect(apiClient.getWithFullUrl(target)).rejects.toThrow('approved HTTPS API hosts');
+      expect(mockOAuthClient.getAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('does not follow a redirect carrying authorization to another endpoint', async () => {
+      const redirected = nock('https://api.sandbox.ebay.com')
+        .get('/redirect-target')
+        .reply(200, { ok: true });
+      nock('https://api.sandbox.ebay.com')
+        .get('/redirect-source')
+        .reply(302, undefined, { Location: 'https://api.sandbox.ebay.com/redirect-target' });
+      await expect(apiClient.get('/redirect-source')).rejects.toThrow();
+      expect(redirected.isDone()).toBe(false);
+    });
+
+    it('does not replay a refund after a 5xx response', async () => {
+      const failed = nock('https://api.sandbox.ebay.com')
+        .post('/sell/fulfillment/v1/order/1/issue_refund')
+        .reply(503, { error: 'ambiguous outcome' });
+      const replay = nock('https://api.sandbox.ebay.com')
+        .post('/sell/fulfillment/v1/order/1/issue_refund')
+        .reply(200, { refundId: 'duplicate' });
+      await expect(
+        apiClient.post('/sell/fulfillment/v1/order/1/issue_refund', { amount: '1' }),
+      ).rejects.toThrow();
+      expect(failed.isDone()).toBe(true);
+      expect(replay.isDone()).toBe(false);
+      expect(mockOAuthClient.getAccessToken).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('Server Error Retry Logic', () => {
     it('retry on 500 errors with exponential backoff', async () => {
       const apiErrorSpy = vi.spyOn(apiLogger, 'error').mockImplementation(() => {});

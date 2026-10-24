@@ -4,6 +4,7 @@
 
 import chalk from 'chalk';
 import { createServer, type Server } from 'http';
+import { randomUUID } from 'node:crypto';
 import type { EbayConfig } from '@/types/ebay.js';
 import { getOAuthAuthorizationUrl } from '@/config/environment.js';
 import { writeCliLine } from '@/utils/cliOutput.js';
@@ -61,7 +62,8 @@ export const generateAuthUrl = (
   redirectUri: string,
   environment: 'sandbox' | 'production',
   scopes?: string[],
-): string => getOAuthAuthorizationUrl(clientId, redirectUri, environment, scopes);
+  state?: string,
+): string => getOAuthAuthorizationUrl(clientId, redirectUri, environment, scopes, state);
 
 /**
  * Escape a string for safe interpolation into HTML text/attribute context.
@@ -216,7 +218,7 @@ export const startCallbackServer = async (
       onServerError(serverError);
     });
 
-    server.listen(port, () => {
+    server.listen(port, '127.0.0.1', () => {
       timer = setTimeout(
         () =>
           settle({
@@ -250,8 +252,19 @@ export const interactiveOAuthFlow = async (
   writeCliLine(chalk.bold.cyan('\n🔐 Interactive OAuth Flow\n'));
 
   // Check if redirect URI is localhost
-  const redirectUri = config.redirectUri || 'http://localhost:3000/oauth/callback';
-  const isLocalhost = redirectUri.includes('localhost') || redirectUri.includes('127.0.0.1');
+  const redirectUri = config.redirectUri || 'http://127.0.0.1:3000/oauth/callback';
+  let callbackUrl: URL;
+  try {
+    callbackUrl = new URL(redirectUri);
+  } catch {
+    writeCliLine(chalk.yellow('Interactive flow requires a valid loopback callback URL.'));
+    return null;
+  }
+  const isLocalhost =
+    ['localhost', '127.0.0.1'].includes(callbackUrl.hostname) &&
+    ['http:', 'https:'].includes(callbackUrl.protocol) &&
+    !callbackUrl.username &&
+    !callbackUrl.password;
 
   if (!isLocalhost) {
     writeCliLine(
@@ -263,15 +276,24 @@ export const interactiveOAuthFlow = async (
   }
 
   // Extract port from redirect URI
-  const portMatch = /:(\d+)/.exec(redirectUri);
-  const port = portMatch ? Number.parseInt(portMatch[1], 10) : 3000;
+  const port = callbackUrl.port ? Number.parseInt(callbackUrl.port, 10) : 3000;
+  const expectedState = randomUUID();
 
   // Start callback server
   writeCliLine(chalk.cyan('Starting local OAuth callback server...\n'));
-  const { server, codePromise } = await startCallbackServer(port);
+  const { server, codePromise } = await startCallbackServer(port, 300_000, {
+    path: callbackUrl.pathname,
+    expectedState,
+  });
 
   // Generate auth URL
-  const authUrl = generateAuthUrl(config.clientId, redirectUri, config.environment, scopes);
+  const authUrl = generateAuthUrl(
+    config.clientId,
+    redirectUri,
+    config.environment,
+    scopes,
+    expectedState,
+  );
 
   writeCliLine(chalk.bold.white('📋 Step 1: Authorize the Application\n'));
   writeCliLine(chalk.gray('Open this URL in your browser:\n'));

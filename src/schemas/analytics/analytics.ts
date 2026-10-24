@@ -30,7 +30,7 @@ const errorSchema = z.object({
 
 const valueSchema = z.object({
   applicable: z.boolean().optional(),
-  value: z.record(z.never()).optional(),
+  value: z.record(z.string(), z.never()).optional(),
 });
 
 // ============================================================================

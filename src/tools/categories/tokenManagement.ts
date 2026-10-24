@@ -328,7 +328,7 @@ export const tokenManagementEntries: ToolEntry[] = [
   defineTool({
     name: 'ebay_clear_tokens',
     description:
-      'Clear all stored OAuth tokens (both user tokens and client credentials). This will require re-authentication for subsequent API calls.',
+      'Clear cached and locally saved OAuth tokens while retaining the application keys. This does not revoke authorization at eBay; revoke third-party access in eBay to terminate the remote grant.',
     inputSchema: clearTokensInputSchema.shape,
     handler: (api) => {
       const authClient = api.getAuthClient().getOAuthClient();
@@ -337,7 +337,7 @@ export const tokenManagementEntries: ToolEntry[] = [
       return {
         success: true,
         message:
-          'All tokens cleared successfully. You will need to re-authenticate for subsequent API calls.',
+          'Local OAuth tokens cleared. Application keys are retained. Revoke third-party access at eBay to terminate authorization there.',
       };
     },
   }),

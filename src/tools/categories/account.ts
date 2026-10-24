@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { zodToJsonSchema } from '@/utils/jsonSchema.js';
 import {
   bulkCreateOrReplaceSalesTaxInputSchema,
   createCustomPolicyInputSchema,

@@ -132,16 +132,27 @@ describe('FinancesApi hosts', () => {
   it('routes apiz calls through EBAY_MCP_API_BASE_URL when configured', async () => {
     client.getConfig.mockReturnValue({
       environment: 'production',
-      apiBaseUrl: 'https://proxy.example.com',
+      apiBaseUrl: 'http://127.0.0.1:8099',
     });
 
     await Effect.runPromise(finances.getTransfer({ transferId: 'T1' }));
 
     expect(client.get).toHaveBeenCalledWith(
-      'https://proxy.example.com/sell/finances/v1/transfer/T1',
+      'http://127.0.0.1:8099/sell/finances/v1/transfer/T1',
       undefined,
       { absolute: true, signed: true },
     );
+  });
+
+  it('rejects remote proxy destinations before the client receives a signed call', async () => {
+    client.getConfig.mockReturnValue({
+      environment: 'production',
+      apiBaseUrl: 'https://proxy.example.com',
+    });
+    await expect(async () =>
+      Effect.runPromise(finances.getTransfer({ transferId: 'T1' })),
+    ).rejects.toThrow('Remote proxies are disabled');
+    expect(client.get).not.toHaveBeenCalled();
   });
 
   it('calls getBillingActivities on the default api host with its query', async () => {

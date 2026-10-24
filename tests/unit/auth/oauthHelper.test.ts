@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'http';
-import { startCallbackServer } from '@/auth/oauthHelper.js';
+import { generateAuthUrl, interactiveOAuthFlow, startCallbackServer } from '@/auth/oauthHelper.js';
 
 /** Resolve the actual TCP port a `0`-bound server was assigned. */
 function portOf(server: Server): number {
@@ -43,6 +43,12 @@ describe('startCallbackServer', () => {
 
     expect(response.status).toBe(200);
     await expect(codePromise).resolves.toMatchObject({ code: 'abc123' });
+  });
+
+  it('binds only the IPv4 loopback interface', async () => {
+    const { server } = await startCallbackServer(0);
+    track(server);
+    expect(server.address()).toMatchObject({ address: '127.0.0.1' });
   });
 
   it('URL-decodes the captured code', async () => {
@@ -136,5 +142,28 @@ describe('startCallbackServer', () => {
     track(server);
 
     await expect(startCallbackServer(portOf(server))).rejects.toThrow();
+  });
+});
+
+describe('OAuth URL and interactive callback validation', () => {
+  it('includes caller state in the authorization URL', () => {
+    const authUrl = generateAuthUrl('client', 'runame', 'sandbox', undefined, 'csrf-state');
+    expect(new URL(authUrl).searchParams.get('state')).toBe('csrf-state');
+  });
+
+  it.each([
+    'https://localhost.attacker.example/oauth/callback',
+    'https://attacker.example/localhost/oauth/callback',
+    'https://127.0.0.1@attacker.example/oauth/callback',
+    'not-a-url-localhost',
+  ])('rejects a deceptive loopback redirect %s before binding a server', async (redirectUri) => {
+    await expect(
+      interactiveOAuthFlow({
+        clientId: 'client',
+        clientSecret: 'secret',
+        environment: 'sandbox',
+        redirectUri,
+      }),
+    ).resolves.toBeNull();
   });
 });

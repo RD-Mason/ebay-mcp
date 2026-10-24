@@ -1,9 +1,15 @@
-import dotenv from 'dotenv';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeFileSync } from 'fs';
 import { CREDENTIAL_ENV_PATH } from '@/config/credentialFile.js';
-import { stringifyEnv } from '@/utils/envFile.js';
+import { readEnvFileSecure, writeEnvFileSecure } from '@/utils/envFile.js';
 import type { EbayConfig, EbayUserToken, StoredTokenData } from '@/types/ebay.js';
 import { Data, Effect } from 'effect';
+import { resolve as absolutePath } from 'node:path';
+
+/** Token persistence cannot change security settings or runtime configuration. */
+const WRITABLE_TOKEN_KEYS = new Set([
+  'EBAY_APP_ACCESS_TOKEN',
+  'EBAY_USER_ACCESS_TOKEN',
+  'EBAY_USER_REFRESH_TOKEN',
+]);
 
 /**
  * Default lifetime for stored eBay user access tokens when eBay omits an expiry.
@@ -97,41 +103,28 @@ export class DotEnvCredentialStore implements CredentialStore {
    * ```
    */
   write(updates: Record<string, string>): Effect.Effect<void, CredentialStoreError> {
-    const envPath = this.getEnvPath();
+    const envPath = absolutePath(this.getEnvPath());
     const writeLock = writeLockForEnvPath(envPath);
 
     return writeLock.withPermits(1)(
       Effect.try({
         try: () => {
-          // Drop non-string values so a missing refresh_token cannot persist as empty.
+          // Reject configuration injection at the token boundary as well as
+          // quoting values during serialization. Empty strings are allowed for
+          // explicit local token removal, but multiline tokens are never valid.
           const sanitizedUpdates: Record<string, string> = {};
           for (const [name, envValue] of Object.entries(updates)) {
-            if (typeof envValue === 'string') {
-              sanitizedUpdates[name] = envValue;
+            if (!WRITABLE_TOKEN_KEYS.has(name)) {
+              throw new Error('Credential updates may only write OAuth token fields');
             }
+            if (typeof envValue !== 'string' || /[\r\n\0]/.test(envValue)) {
+              throw new Error('OAuth tokens must be single-line strings');
+            }
+            sanitizedUpdates[name] = envValue;
           }
 
-          const existingEnv = existsSync(envPath)
-            ? dotenv.parse(readFileSync(envPath, 'utf-8'))
-            : {};
-          const safeEnvContent = stringifyEnv({ ...existingEnv, ...sanitizedUpdates });
-
-          writeFileSync(envPath, safeEnvContent, 'utf-8');
-
-          // Durability: best-effort fsync. Windows and mocked FS may reject fsync
-          // on a read-only open; never fail the write after a successful writeFileSync.
-          if (existsSync(envPath)) {
-            try {
-              const fd = openSync(envPath, 'r+');
-              try {
-                fsyncSync(fd);
-              } finally {
-                closeSync(fd);
-              }
-            } catch {
-              // Ignore fsync failures — tokens are already on disk for the write path.
-            }
-          }
+          const existingEnv = readEnvFileSecure(envPath);
+          writeEnvFileSecure(envPath, { ...existingEnv, ...sanitizedUpdates });
         },
         catch: (cause) =>
           new CredentialStoreError({

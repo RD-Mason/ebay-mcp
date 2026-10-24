@@ -3,6 +3,7 @@ import {
   getToolGatingConfigError,
   resolveToolGatingMode,
   TOOL_FAMILY_KEYS,
+  DEFAULT_TOOL_FAMILIES,
 } from '@/config/toolFamilies.js';
 import { toolCategories } from '@/tools/categories/index.js';
 
@@ -14,8 +15,11 @@ describe('toolFamilies', () => {
   });
 
   describe('resolveToolGatingMode', () => {
-    it('defaults to "all" when unset', () => {
-      expect(resolveToolGatingMode({})).toEqual({ kind: 'all' });
+    it('defaults to a limited set of stock/category families when unset', () => {
+      expect(resolveToolGatingMode({})).toEqual({
+        kind: 'static',
+        families: DEFAULT_TOOL_FAMILIES,
+      });
     });
 
     it('treats "all" (any case) as all', () => {

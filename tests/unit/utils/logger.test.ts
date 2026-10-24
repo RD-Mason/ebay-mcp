@@ -1,11 +1,24 @@
 import { apiLogger, createLogger, logRequest, logResponse } from '@/utils/logger.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+beforeEach(() => vi.stubEnv('EBAY_LOG_BODIES', 'true'));
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('HTTP logging', () => {
+  it('omits request parameters and all bodies by default, including error details', () => {
+    vi.stubEnv('EBAY_LOG_BODIES', undefined);
+    const http = vi.spyOn(apiLogger, 'http').mockImplementation(() => {});
+    logRequest('POST', 'https://api.ebay.com/x', { email: 'private' }, { buyer: 'private' });
+    logResponse(200, 'OK', { buyer: 'private' });
+    expect(http.mock.calls).toEqual([
+      ['Request: POST https://api.ebay.com/x', { params: undefined, body: undefined }],
+      ['Response: 200 OK', {}],
+    ]);
+  });
   it('logs binary request and response bodies by size only', () => {
     const http = vi.spyOn(apiLogger, 'http').mockImplementation(() => {});
     const file = Buffer.alloc(2048, 0x41);

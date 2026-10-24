@@ -377,7 +377,15 @@ export const httpRequestEffect = <T = unknown>(
 
     return Effect.gen(function* () {
       const response = yield* Effect.tryPromise({
-        try: () => fetch(url, { method, headers, body: wireBody, signal: deadline.signal }),
+        // Never forward credentials, signed headers or request bodies through a redirect.
+        try: () =>
+          fetch(url, {
+            method,
+            headers,
+            body: wireBody,
+            signal: deadline.signal,
+            redirect: 'error',
+          }),
         catch: (error) => failure(error, 'response headers'),
       });
       const responseHeaders = collectHeaders(response);

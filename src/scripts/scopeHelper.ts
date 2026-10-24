@@ -3,7 +3,7 @@
  */
 
 import chalk from 'chalk';
-import { getDefaultScopes } from '@/config/environment.js';
+import { getDefaultScopes, getRequestedScopes } from '@/config/environment.js';
 import { writeCliLine } from '@/utils/cliOutput.js';
 
 /**
@@ -119,7 +119,7 @@ export const getScopeCategories = (): ScopeCategory[] => [
  * ```
  */
 export const getRecommendedScopes = (environment: 'sandbox' | 'production'): string[] =>
-  getDefaultScopes(environment);
+  getRequestedScopes(environment);
 
 /**
  * Display scope selection interface

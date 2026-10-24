@@ -1,4 +1,4 @@
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { zodToJsonSchema } from '@/utils/jsonSchema.js';
 import { Effect } from 'effect';
 import { defineTool } from '@/tools/defineTool.js';
 import { mapRateLimitsToStat, mapUserRateLimitsToStat } from '@/tools/ui/maps.js';

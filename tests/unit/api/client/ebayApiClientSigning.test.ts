@@ -26,7 +26,7 @@ vi.mock('@/auth/oauth.js', () => ({
 
 const APIZ = 'https://apiz.sandbox.ebay.com';
 const API = 'https://api.sandbox.ebay.com';
-const PROXY_HOST = 'https://proxy.example.com';
+const PROXY_HOST = 'http://127.0.0.1:8099';
 const PROXY_BASE_URL = `${PROXY_HOST}/ebay`;
 const JWE = 'test.jwe.value';
 const PRIVATE_KEY_PARSE_ERROR_PATTERN = /EBAY_SIGNING_PRIVATE_KEY could not be parsed/;

@@ -4,6 +4,7 @@ node_modules/
 # build
 build/
 .cache/
+.local/
 devSyncReport.json
 
 # env

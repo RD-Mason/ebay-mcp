@@ -1,54 +1,47 @@
-name: CI
-'on':
+name: Fork Security CI
+on:
   push:
-    branches:
-      - main
+    branches: [main, security/local-hardening]
   pull_request:
-    branches:
-      - main
-  workflow_dispatch: null
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  biome:
-    uses: ./.github/workflows/biome.yml
-  typecheck:
-    uses: ./.github/workflows/typecheck.yml
-  test:
-    uses: ./.github/workflows/test.yml
-  build:
-    uses: ./.github/workflows/build.yml
-  gate:
-    name: CI Gate
-    needs:
-      - biome
-      - typecheck
-      - test
-      - build
-    if: always()
-    runs-on: ubuntu-slim
+  verify:
+    name: Verify hardened fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Require every gate to pass
+      - name: Checkout without saved credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Install pinned package manager
+        run: npm install --prefix "$RUNNER_TEMP/pnpm-cli" --ignore-scripts --no-audit --no-fund pnpm@10.14.0
+      - name: Install frozen dependencies without lifecycle scripts
+        run: node "$RUNNER_TEMP/pnpm-cli/node_modules/pnpm/bin/pnpm.cjs" install --frozen-lockfile --ignore-scripts
+      - name: Lint and typecheck
         run: |
-          echo "biome=${{ needs.biome.result }} typecheck=${{ needs.typecheck.result }} test=${{ needs.test.result }} build=${{ needs.build.result }}"
-          test "${{ needs.biome.result }}" = "success" \
-            && test "${{ needs.typecheck.result }}" = "success" \
-            && test "${{ needs.test.result }}" = "success" \
-            && test "${{ needs.build.result }}" = "success"
-    timeout-minutes: 5
-  report-failure:
-    name: Open issue on main failure
-    needs:
-      - biome
-      - typecheck
-      - test
-      - build
-    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      issues: write
-      actions: read
-    uses: ./.github/workflows/report-failure.yml
+          node node_modules/@biomejs/biome/bin/biome ci .
+          node node_modules/typescript/bin/tsc --noEmit
+          node node_modules/typescript/bin/tsc -p mcp-apps/tsconfig.json --noEmit
+      - name: Build validated sources
+        run: node "$RUNNER_TEMP/pnpm-cli/node_modules/pnpm/bin/pnpm.cjs" run build
+      - name: Unit and integration tests
+        run: |
+          node node_modules/vitest/vitest.mjs run
+          node node_modules/vitest/vitest.mjs run --config vitest.integration.config.cts
+      - name: Build and test the offline MCP protocol
+        run: |
+          node scripts/seal-local.mjs
+          node scripts/test-local-integrity.mjs
+          node scripts/smoke-local.mjs

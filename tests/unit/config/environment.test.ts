@@ -316,7 +316,7 @@ describe('Environment Configuration', () => {
   describe('host base URLs with override', () => {
     it('returns the override when provided, for either environment', () => {
       expect(getBaseUrl('production', 'http://localhost:8080')).toBe('http://localhost:8080');
-      expect(getBaseUrl('sandbox', 'https://proxy.internal')).toBe('https://proxy.internal');
+      expect(getBaseUrl('sandbox', 'http://127.0.0.1:8099')).toBe('http://127.0.0.1:8099');
       expect(getIdentityBaseUrl('production', 'http://localhost:8080')).toBe(
         'http://localhost:8080',
       );
@@ -379,40 +379,29 @@ describe('Environment Configuration', () => {
 
       const proxy = getProxyAuthConfig();
 
-      expect(
-        proxy.warnings.some((warning) => warning.includes('EBAY_MCP_API_BASE_URL is not set')),
-      ).toBe(true);
-    });
-
-    it('warns about cleartext http to a non-loopback host while auth is on', () => {
-      process.env.EBAY_MCP_API_BASE_URL = 'http://proxy.example.com:8080';
-
-      const proxy = getProxyAuthConfig();
-
-      expect(proxy.warnings.some((warning) => warning.includes('transmitted unencrypted'))).toBe(
+      expect(proxy.errors.some((error) => error.includes('EBAY_MCP_API_BASE_URL is not set'))).toBe(
         true,
       );
     });
 
-    it('does not warn for cleartext http to a loopback host', () => {
-      process.env.EBAY_MCP_API_BASE_URL = 'http://127.0.0.1:8080';
-      expect(getProxyAuthConfig().warnings).toHaveLength(0);
-    });
-
-    it('does not warn for https to a non-loopback host', () => {
-      process.env.EBAY_MCP_API_BASE_URL = 'https://proxy.example.com';
-      expect(getProxyAuthConfig().warnings).toHaveLength(0);
-    });
-
-    it('does not warn about cleartext when auth is also disabled', () => {
-      process.env.EBAY_MCP_DISABLE_AUTH_HEADER = 'true';
-      process.env.EBAY_MCP_API_BASE_URL = 'http://proxy.example.com:8080';
-
+    it.each([
+      'http://proxy.example.com:8080',
+      'https://proxy.example.com',
+      'http://0.0.0.0:8080',
+      'ftp://localhost:8080',
+      'http://user:password@localhost:8080',
+      'http://127.0.0.1:8080?token=secret',
+    ])('rejects an unsafe proxy base URL %s', (baseUrl) => {
+      process.env.EBAY_MCP_API_BASE_URL = baseUrl;
       const proxy = getProxyAuthConfig();
+      expect(proxy.apiBaseUrl).toBeUndefined();
+      expect(proxy.errors.some((error) => error.includes('loopback'))).toBe(true);
+      expect(() => getBaseUrl('sandbox', baseUrl)).toThrow();
+    });
 
-      expect(proxy.warnings.some((warning) => warning.includes('transmitted unencrypted'))).toBe(
-        false,
-      );
+    it('allows an explicitly configured loopback proxy', () => {
+      process.env.EBAY_MCP_API_BASE_URL = 'http://127.0.0.1:8080';
+      expect(getProxyAuthConfig().errors).toHaveLength(0);
     });
   });
 

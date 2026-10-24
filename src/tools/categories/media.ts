@@ -21,7 +21,7 @@ import type { ToolEntry } from '@/tools/registry.js';
 import type { OutputArgs } from '@/tools/types.js';
 import { loadLocalMedia, loadLocalMediaList } from '@/utils/localMedia.js';
 import { Effect } from 'effect';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { zodToJsonSchema } from '@/utils/jsonSchema.js';
 
 const MEDIA_ACCESS_NOTE =
   'Local file access is opt-in: the file must sit inside a directory listed in EBAY_MCP_MEDIA_DIRS (or under EBAY_MCP_MEDIA_ROOT, which also anchors media://<relative-path> references). Symlinks are resolved before the check.';
