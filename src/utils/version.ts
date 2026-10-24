@@ -1,8 +1,9 @@
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import updateNotifier from 'update-notifier';
 import { Effect, Either } from 'effect';
+import process from 'node:process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -107,6 +108,9 @@ const ONE_DAY_MS = 1000 * 60 * 60 * 24;
  * ```
  */
 export const checkForUpdates = (options: { defer?: boolean } = {}): void => {
+  if (process.env.EBAY_MCP_CHECK_UPDATES !== 'true') {
+    return;
+  }
   const pkg = getPackageJson();
 
   const notifier = updateNotifier({
@@ -118,6 +122,8 @@ export const checkForUpdates = (options: { defer?: boolean } = {}): void => {
   notifier.notify({
     isGlobal: true,
     defer: options.defer ?? false,
+    message:
+      'Upstream metadata is available. Review changes in your fork before updating this checkout.',
   });
 };
 
@@ -141,6 +147,9 @@ export const checkForUpdates = (options: { defer?: boolean } = {}): void => {
  * ```
  */
 export const getCachedUpdateNotice = (): string | undefined => {
+  if (process.env.EBAY_MCP_CHECK_UPDATES !== 'true') {
+    return;
+  }
   const pkg = getPackageJson();
 
   const notifier = updateNotifier({
@@ -153,7 +162,7 @@ export const getCachedUpdateNotice = (): string | undefined => {
     return;
   }
 
-  return `Update available ${pkg.version} → ${update.latest} — run \`npm i -g ${pkg.name}\` to update`;
+  return `Upstream update available ${pkg.version} → ${update.latest}; review it in your fork before updating this checkout.`;
 };
 
 /**
@@ -169,6 +178,9 @@ export const getCachedUpdateNotice = (): string | undefined => {
 export const getUpdateInfo = async (): Promise<
   { current: string; latest: string; name: string } | undefined
 > => {
+  if (process.env.EBAY_MCP_CHECK_UPDATES !== 'true') {
+    return;
+  }
   const pkg = getPackageJson();
 
   const notifier = updateNotifier({

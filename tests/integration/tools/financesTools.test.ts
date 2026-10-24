@@ -1,7 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { EbaySellerApi } from '@/api/ebaySellerApi.js';
-import { createEbayMcpRuntime, type EbayMcpRuntime } from '@/mcp/runtime.js';
+import type { EbayMcpRuntime } from '@/mcp/runtime.js';
+import { createContractRuntime as createEbayMcpRuntime } from '../support/contractRuntime.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import { Effect } from 'effect';
 import nock from 'nock';

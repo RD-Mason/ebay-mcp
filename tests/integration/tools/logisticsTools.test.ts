@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { EbaySellerApi } from '@/api/ebaySellerApi.js';
-import { createEbayMcpRuntime } from '@/mcp/runtime.js';
+import { createContractRuntime as createEbayMcpRuntime } from '../support/contractRuntime.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import { Effect } from 'effect';
 import nock from 'nock';
@@ -191,7 +191,7 @@ describe('shipping quote tools', () => {
     expect(invalidQuote.isError).toBe(true);
     expect(invalidQuote.content[0]).toMatchObject({
       type: 'text',
-      text: expect.stringContaining('Array must contain at most 10 element(s)'),
+      text: expect.stringContaining('expected array to have <=10 items'),
     });
     expect(createQuoteScope.isDone()).toBe(false);
   });

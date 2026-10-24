@@ -5,13 +5,19 @@ import {
   createHttpTransportConfigFromEnv,
   getAuthServerMetadataUrl,
   getHttpServerUrl,
+  getHttpSessionPrincipal,
   type HttpTransportConfig,
 } from '@/mcp/httpTransport.js';
 import process from 'node:process';
+import type { AuthenticatedRequest } from '@/auth/oauthMiddleware.js';
+import { gzipSync } from 'node:zlib';
+
+const TEST_TOKEN = 'test-only-static-token-at-least-32-characters';
 
 function createTestConfig(overrides: Partial<HttpTransportConfig> = {}): HttpTransportConfig {
   return {
     authEnabled: false,
+    staticAuthToken: TEST_TOKEN,
     corsOrigins: ['https://app.example.test'],
     ebayConfig: {
       clientId: 'client',
@@ -31,6 +37,81 @@ function createTestConfig(overrides: Partial<HttpTransportConfig> = {}): HttpTra
 }
 
 describe('HTTP MCP transport', () => {
+  it('rejects compressed JSON before decompression, including trailing bytes', async () => {
+    const app = await createHttpMcpApp(createTestConfig());
+    const compressed = Buffer.concat([
+      gzipSync('{"jsonrpc":"2.0"}'),
+      Buffer.from('trailing bytes'),
+    ]);
+    const response = await request(app)
+      .post('/')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'gzip')
+      .send(compressed);
+    expect(response.status).toBe(415);
+    // A later request still succeeds: malformed compression cannot kill the server.
+    expect((await request(app).get('/health')).status).toBe(200);
+  });
+  it('refuses unauthenticated HTTP even on loopback', async () => {
+    await expect(
+      createHttpMcpApp(createTestConfig({ staticAuthToken: undefined })),
+    ).rejects.toThrow('Unauthenticated HTTP is disabled');
+  });
+
+  it('rejects non-loopback binding even with an allowlist and authentication', async () => {
+    await expect(
+      createHttpMcpApp(createTestConfig({ host: '0.0.0.0', allowedHosts: ['shop.example.test'] })),
+    ).rejects.toThrow('only supports loopback');
+  });
+
+  it('rejects weak bearer tokens and wildcard browser origins', async () => {
+    await expect(createHttpMcpApp(createTestConfig({ staticAuthToken: 'short' }))).rejects.toThrow(
+      'at least 32',
+    );
+    await expect(createHttpMcpApp(createTestConfig({ corsOrigins: ['*'] }))).rejects.toThrow(
+      'Wildcard',
+    );
+  });
+
+  it('blocks DNS rebinding Host headers before routing, even with a valid bearer', async () => {
+    const app = await createHttpMcpApp(createTestConfig());
+    const blocked = await request(app)
+      .get('/health')
+      .set('Host', 'evil.example.test:3000')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`);
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error).toBe('invalid_host');
+  });
+
+  it('ignores spoofed forwarding headers when checking the Host', async () => {
+    const app = await createHttpMcpApp(createTestConfig());
+    const blocked = await request(app)
+      .get('/health')
+      .set('Host', 'evil.example.test')
+      .set('X-Forwarded-Host', '127.0.0.1:3000');
+    expect(blocked.status).toBe(403);
+  });
+
+  it('binds sessions to the authenticated subject and client, or the exact bearer', () => {
+    const makeRequest = (token: string, subject?: string, clientId = 'client') =>
+      ({
+        headers: { authorization: `Bearer ${token}` },
+        auth: subject ? { token, subject, clientId, scopes: ['mcp:tools'] } : undefined,
+      }) as AuthenticatedRequest;
+    expect(getHttpSessionPrincipal(makeRequest('token-a'))).not.toBe(
+      getHttpSessionPrincipal(makeRequest('token-b')),
+    );
+    expect(getHttpSessionPrincipal(makeRequest('token-a', 'alice'))).not.toBe(
+      getHttpSessionPrincipal(makeRequest('token-a', 'bob')),
+    );
+    expect(getHttpSessionPrincipal(makeRequest('token-a', 'alice'))).not.toBe(
+      getHttpSessionPrincipal(makeRequest('token-a', 'alice', 'other-client')),
+    );
+    expect(getHttpSessionPrincipal(makeRequest('old', 'alice'))).toBe(
+      getHttpSessionPrincipal(makeRequest('refreshed', 'alice')),
+    );
+  });
+
   it('builds HTTP server and metadata URLs from config', () => {
     const config = createTestConfig();
 
@@ -63,16 +144,16 @@ describe('HTTP MCP transport', () => {
     expect(config.oauth.requiredScopes).toEqual(['mcp:tools', 'mcp:admin']);
   });
 
-  it('binds 0.0.0.0 and uses PORT when only PORT is set', () => {
+  it('keeps loopback binding when only PORT is set', () => {
     const config = createHttpTransportConfigFromEnv({
       PORT: '8080',
     });
 
-    expect(config.host).toBe('0.0.0.0');
+    expect(config.host).toBe('127.0.0.1');
     expect(config.port).toBe(8080);
   });
 
-  it('lets MCP_HOST override the PORT-driven 0.0.0.0 default', () => {
+  it('allows an explicit MCP_HOST', () => {
     const config = createHttpTransportConfigFromEnv({
       PORT: '8080',
       MCP_HOST: '127.0.0.1',
@@ -88,16 +169,16 @@ describe('HTTP MCP transport', () => {
       MCP_PORT: '4000',
     });
 
-    expect(config.host).toBe('0.0.0.0');
+    expect(config.host).toBe('127.0.0.1');
     expect(config.port).toBe(4000);
   });
 
   it('reads staticAuthToken from MCP_AUTH_TOKEN', () => {
     const config = createHttpTransportConfigFromEnv({
-      MCP_AUTH_TOKEN: 'deploy-secret',
+      MCP_AUTH_TOKEN: TEST_TOKEN,
     });
 
-    expect(config.staticAuthToken).toBe('deploy-secret');
+    expect(config.staticAuthToken).toBe(TEST_TOKEN);
   });
 
   it('allows only loopback browser origins when MCP_CORS_ORIGINS is unset', async () => {
@@ -110,6 +191,7 @@ describe('HTTP MCP transport', () => {
 
     expect(local.headers['access-control-allow-origin']).toBe('http://localhost:6274');
     expect(loopback.headers['access-control-allow-origin']).toBe('http://127.0.0.1:3000');
+    expect(remote.status).toBe(403);
     expect(remote.headers['access-control-allow-origin']).toBeUndefined();
   });
 
@@ -141,6 +223,7 @@ describe('HTTP MCP transport', () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers['access-control-allow-origin']).toBe('https://app.example.test');
     expect(preflight.headers['access-control-allow-headers']).toBe('content-type,mcp-session-id');
+    expect(blocked.status).toBe(403);
     expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
     expect(allowed.headers['access-control-expose-headers']).toBe('Mcp-Session-Id');
   });
@@ -159,7 +242,7 @@ describe('HTTP MCP transport', () => {
 
   it('rejects session requests without a valid MCP session id', async () => {
     const app = await createHttpMcpApp(createTestConfig());
-    const response = await request(app).get('/');
+    const response = await request(app).get('/').set('Authorization', `Bearer ${TEST_TOKEN}`);
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
@@ -171,7 +254,7 @@ describe('HTTP MCP transport', () => {
   it('rejects protected routes without the static bearer token', async () => {
     const app = await createHttpMcpApp(
       createTestConfig({
-        staticAuthToken: 'deploy-secret',
+        staticAuthToken: TEST_TOKEN,
       }),
     );
 
@@ -187,13 +270,13 @@ describe('HTTP MCP transport', () => {
   it('accepts protected routes with the static bearer token', async () => {
     const app = await createHttpMcpApp(
       createTestConfig({
-        staticAuthToken: 'deploy-secret',
+        staticAuthToken: TEST_TOKEN,
       }),
     );
 
     // Health is unauthenticated; hit the MCP session route which uses auth middleware.
     // A valid bearer passes auth, then the handler still rejects missing session id.
-    const response = await request(app).get('/').set('Authorization', 'Bearer deploy-secret');
+    const response = await request(app).get('/').set('Authorization', `Bearer ${TEST_TOKEN}`);
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
@@ -205,7 +288,7 @@ describe('HTTP MCP transport', () => {
   it('keeps health unauthenticated when static bearer auth is enabled', async () => {
     const app = await createHttpMcpApp(
       createTestConfig({
-        staticAuthToken: 'deploy-secret',
+        staticAuthToken: TEST_TOKEN,
       }),
     );
 

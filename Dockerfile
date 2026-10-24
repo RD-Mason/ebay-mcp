@@ -4,7 +4,7 @@ FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.14.0
 
 # Copy package manifests first for better layer caching
 COPY package.json pnpm-lock.yaml* ./
@@ -22,7 +22,7 @@ FROM node:24-alpine
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.14.0
 
 # Copy package manifests
 COPY package.json pnpm-lock.yaml* ./

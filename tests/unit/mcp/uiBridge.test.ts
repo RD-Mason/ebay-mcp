@@ -10,6 +10,7 @@ import {
   summarizeView,
 } from '@/mcp/uiBridge.js';
 import type { ResolvedToolUi } from '@/tools/registry.js';
+import { mapOrderToCard } from '@/tools/ui/maps.js';
 import type {
   CardViewModel,
   ChartViewModel,
@@ -135,6 +136,19 @@ describe('summarizeView', () => {
 });
 
 describe('buildUiToolResult', () => {
+  it('redacts buyer identity before a UI mapper can move it into a subtitle', () => {
+    const ui: ResolvedToolUi = {
+      archetype: 'card',
+      resourceUri: 'ui://ebay/card.html',
+      map: mapOrderToCard as ResolvedToolUi['map'],
+    };
+    const result = buildUiToolResult(ui, {
+      orderId: '12-3456',
+      buyer: { username: 'private-buyer-identity' },
+    });
+    expect(JSON.stringify(result)).not.toContain('private-buyer-identity');
+    expect(JSON.stringify(result)).toContain('12-3456');
+  });
   it('projects a result into a summary line, structuredContent, and resource meta', () => {
     const ui: ResolvedToolUi = {
       archetype: 'card',

@@ -68,15 +68,26 @@ describe('MediaApi', () => {
   it('honours the proxy base URL override for the Media API host', async () => {
     client.getConfig.mockReturnValue({
       environment: 'production',
-      apiBaseUrl: 'http://proxy:8080',
+      apiBaseUrl: 'http://127.0.0.1:8080',
     });
     client.postForResponse.mockResolvedValue({ status: 201, headers: {}, data: { imageUrl: 'u' } });
 
     await Effect.runPromise(media.createImageFromFile(file));
 
     expect(client.postForResponse.mock.calls[0][0]).toBe(
-      'http://proxy:8080/commerce/media/v1_beta/image/create_image_from_file',
+      'http://127.0.0.1:8080/commerce/media/v1_beta/image/create_image_from_file',
     );
+  });
+
+  it('rejects remote proxy destinations before uploading any file', async () => {
+    client.getConfig.mockReturnValue({
+      environment: 'production',
+      apiBaseUrl: 'https://proxy.example.com',
+    });
+    await expect(async () => Effect.runPromise(media.createImageFromFile(file))).rejects.toThrow(
+      'Remote proxies are disabled',
+    );
+    expect(client.postForResponse).not.toHaveBeenCalled();
   });
 
   it('fails when eBay returns no image URL', async () => {

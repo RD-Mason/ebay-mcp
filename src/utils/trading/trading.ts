@@ -24,7 +24,7 @@ export const getListingSchema = z.object({
 export const createListingSchema = z.object({
   format: listingFormatSchema,
   item: z
-    .record(z.unknown())
+    .record(z.string(), z.unknown())
     .describe(
       'Trading API Item payload. FIXED_PRICE: StartPrice is the listing price and ListingDuration is GTC. AUCTION: StartPrice is the opening bid, ListingDuration is a day count (Days_1/3/5/7/10), Quantity is 1, an optional ReservePrice must exceed StartPrice, an optional BuyItNowPrice must be at least 30% above it (and excludes Best Offer); ListingType Chinese is added for you.',
     ),
@@ -34,7 +34,7 @@ export const createListingSchema = z.object({
 export const reviseListingSchema = z.object({
   format: listingFormatSchema,
   itemId: z.string().describe('The eBay item ID to revise'),
-  fields: z.record(z.unknown()).describe('Trading API Item fields to update'),
+  fields: z.record(z.string(), z.unknown()).describe('Trading API Item fields to update'),
 });
 
 /** Input accepted by endListing. */
@@ -54,7 +54,7 @@ export const relistItemSchema = z.object({
   format: listingFormatSchema,
   itemId: z.string().describe('The eBay item ID to relist'),
   modifications: z
-    .record(z.unknown())
+    .record(z.string(), z.unknown())
     .optional()
     .describe('Optional Trading API Item fields to change while relisting'),
 });

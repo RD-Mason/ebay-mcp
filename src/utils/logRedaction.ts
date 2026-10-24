@@ -1,26 +1,10 @@
-const REDACTED = '[REDACTED]';
-const URL_CREDENTIALS = /\/\/[^\s/@]+@/g;
-const SECRET_KEY = /secret|password|token|authorization|cookie|api.?key/i;
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+import { sanitizeSecretText, sanitizeToolResultForModel } from './privacy.js';
 
 export const redactSecrets = (text: string): string =>
-  text.replace(URL_CREDENTIALS, `//${REDACTED}@`);
+  sanitizeSecretText(text).replace(
+    /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Z0-9](?:[A-Z0-9.-]{0,251}[A-Z0-9])?\.[A-Z]{2,63}/gi,
+    '[REDACTED]',
+  );
 
-export const redactSecretFields = (value: unknown): unknown => {
-  if (typeof value === 'string') {
-    return redactSecrets(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSecretFields(item));
-  }
-  if (!isPlainObject(value)) {
-    return value;
-  }
-  const fields = Object.entries(value).map(([key, field]) => [
-    key,
-    SECRET_KEY.test(key) ? REDACTED : redactSecretFields(field),
-  ]);
-  return Object.fromEntries(fields);
-};
+export const redactSecretFields = (value: unknown): unknown =>
+  sanitizeToolResultForModel(value, { EBAY_MCP_REDACT_PII: 'true' });

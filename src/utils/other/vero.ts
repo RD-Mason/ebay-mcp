@@ -11,29 +11,22 @@ import { z } from 'zod';
 
 // Reusable schema for filter parameter
 const filterSchema = z
-  .string({
-    message: 'Filter must be a string',
-    invalid_type_error: 'filter must be a string',
-    description: 'Filter criteria for the query (e.g., date range)',
-  })
+  .string({ error: 'filter must be a string' })
+  .describe('Filter criteria for the query (e.g., date range)')
   .optional();
 
 // Reusable schema for limit parameter
 const limitSchema = z
-  .number({
-    invalid_type_error: 'limit must be a number',
-    description: 'Maximum number of items to return',
-  })
+  .number({ error: 'limit must be a number' })
+  .describe('Maximum number of items to return')
   .int()
   .positive()
   .optional();
 
 // Reusable schema for offset parameter
 const offsetSchema = z
-  .number({
-    invalid_type_error: 'offset must be a number',
-    description: 'Number of items to skip',
-  })
+  .number({ error: 'offset must be a number' })
+  .describe('Number of items to skip')
   .int()
   .nonnegative()
   .optional();
@@ -73,11 +66,10 @@ export const createVeroReportSchema = z.object({
 export const getVeroReportSchema = z.object({
   veroReportId: z
     .string({
-      message: 'VERO report ID is required',
-      required_error: 'veroReportId is required',
-      invalid_type_error: 'veroReportId must be a string',
-      description: 'The unique identifier of the VERO report',
+      error: (issue) =>
+        issue.input === undefined ? 'veroReportId is required' : 'veroReportId must be a string',
     })
+    .describe('The unique identifier of the VERO report')
     .min(1, 'VERO report ID cannot be empty'),
 });
 
@@ -100,11 +92,12 @@ export const getVeroReportItemsSchema = z.object({
 export const getVeroReasonCodeSchema = z.object({
   veroReasonCodeId: z
     .string({
-      message: 'VERO reason code ID is required',
-      required_error: 'veroReasonCodeId is required',
-      invalid_type_error: 'veroReasonCodeId must be a string',
-      description: 'The unique identifier of the VERO reason code',
+      error: (issue) =>
+        issue.input === undefined
+          ? 'veroReasonCodeId is required'
+          : 'veroReasonCodeId must be a string',
     })
+    .describe('The unique identifier of the VERO reason code')
     .min(1, 'VERO reason code ID cannot be empty'),
 });
 

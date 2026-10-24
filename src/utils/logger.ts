@@ -1,9 +1,10 @@
 import winston from 'winston';
-import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
+import { join } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { getLoggingConfig } from '@/config/environment.js';
 import { redactSecretFields, redactSecrets } from '@/utils/logRedaction.js';
+import process from 'node:process';
 
 /**
  * Log directory for eBay MCP Server
@@ -12,10 +13,11 @@ import { redactSecretFields, redactSecrets } from '@/utils/logRedaction.js';
 const LOG_DIR = join(homedir(), '.ebay-mcp', 'logs');
 const loggingConfig = getLoggingConfig();
 
-// Ensure log directory exists
-if (!existsSync(LOG_DIR)) {
-  mkdirSync(LOG_DIR, { recursive: true });
-}
+const ensureLogDirectory = (): void => {
+  if (!existsSync(LOG_DIR)) {
+    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+  }
+};
 
 /**
  * Log level from environment variable or default to 'info'
@@ -35,7 +37,7 @@ const consoleFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.errors({ stack: true }),
   winston.format.printf(({ level, message, timestamp, stack, ...meta }) => {
-    const metaStr = Object.keys(meta).length ? `\n${JSON.stringify(meta, null, 2)}` : '';
+    const metaStr = Object.keys(meta).length > 0 ? `\n${JSON.stringify(meta, null, 2)}` : '';
     const stackStr = typeof stack === 'string' ? `\n${stack}` : '';
     return `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}${stackStr}`;
   }),
@@ -63,10 +65,12 @@ const transports: winston.transport[] = [
 
 // Add file transports if enabled
 if (fileLoggingEnabled) {
+  ensureLogDirectory();
   transports.push(
     // Error log - only errors
     new winston.transports.File({
       filename: join(LOG_DIR, 'error.log'),
+      options: { mode: 0o600 },
       level: 'error',
       format: fileFormat,
       maxsize: 5 * 1024 * 1024, // 5MB
@@ -76,6 +80,7 @@ if (fileLoggingEnabled) {
     // Combined log - all levels
     new winston.transports.File({
       filename: join(LOG_DIR, 'combined.log'),
+      options: { mode: 0o600 },
       format: fileFormat,
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 5,
@@ -84,6 +89,7 @@ if (fileLoggingEnabled) {
     // Debug log - verbose and debug messages
     new winston.transports.File({
       filename: join(LOG_DIR, 'debug.log'),
+      options: { mode: 0o600 },
       level: 'debug',
       format: fileFormat,
       maxsize: 10 * 1024 * 1024, // 10MB
@@ -212,9 +218,10 @@ export const logRequest = (
   params?: Record<string, unknown>,
   requestBody?: unknown,
 ): void => {
+  const includeBodies = process.env.EBAY_LOG_BODIES === 'true';
   apiLogger.http(`Request: ${method.toUpperCase()} ${url}`, {
-    params: params && Object.keys(params).length > 0 ? params : undefined,
-    body: requestBody ? truncateData(requestBody) : undefined,
+    params: includeBodies && params && Object.keys(params).length > 0 ? params : undefined,
+    body: includeBodies && requestBody ? truncateData(requestBody) : undefined,
   });
 };
 
@@ -246,7 +253,7 @@ export const logResponse = (
     meta.rateLimit = `${rateLimitRemaining}/${rateLimitTotal}`;
   }
 
-  if (responseBody) {
+  if (process.env.EBAY_LOG_BODIES === 'true' && responseBody) {
     meta.data = truncateData(responseBody);
   }
 
@@ -277,7 +284,8 @@ export const logErrorResponse = (
   const statusTextLabel = statusText ?? 'No response';
   apiLogger.error(`Error Response: ${statusLabel} ${statusTextLabel}`, {
     url,
-    error: errorData ? truncateData(errorData) : undefined,
+    error:
+      process.env.EBAY_LOG_BODIES === 'true' && errorData ? truncateData(errorData) : undefined,
   });
 };
 
@@ -342,9 +350,11 @@ export const isFileLoggingEnabled = (): boolean => fileLoggingEnabled;
  */
 export const setFileLogging = (enabled: boolean): void => {
   if (enabled && !fileLoggingEnabled) {
+    ensureLogDirectory();
     logger.add(
       new winston.transports.File({
         filename: join(LOG_DIR, 'error.log'),
+        options: { mode: 0o600 },
         level: 'error',
         format: fileFormat,
         maxsize: 5 * 1024 * 1024,
@@ -355,6 +365,7 @@ export const setFileLogging = (enabled: boolean): void => {
     logger.add(
       new winston.transports.File({
         filename: join(LOG_DIR, 'combined.log'),
+        options: { mode: 0o600 },
         format: fileFormat,
         maxsize: 10 * 1024 * 1024,
         maxFiles: 5,

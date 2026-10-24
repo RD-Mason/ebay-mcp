@@ -1,5 +1,5 @@
 import cors from 'cors';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import helmet from 'helmet';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -8,6 +8,8 @@ import { isInitializeRequest, type Implementation } from '@modelcontextprotocol/
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { createBearerAuthMiddleware } from '@/auth/oauthMiddleware.js';
+import type { AuthenticatedRequest } from '@/auth/oauthMiddleware.js';
+import { isLoopbackHost } from '@/config/networkPolicy.js';
 import { createMetadataRouter, getProtectedResourceMetadataUrl } from '@/auth/oauthMetadata.js';
 import { TokenVerifier } from '@/auth/tokenVerifier.js';
 import { getDefaultScopes, getEbayConfig } from '@/config/environment.js';
@@ -57,6 +59,8 @@ export interface HttpTransportConfig {
    * `Authorization: Bearer <token>` and skip the OAuth token verifier.
    */
   staticAuthToken?: string;
+  /** Exact Host header names allowed in addition to loopback names. Never use wildcards. */
+  allowedHosts?: string[];
 }
 
 const LOOPBACK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
@@ -90,9 +94,8 @@ const getProjectRoot = (): string => {
  * ```
  */
 export const createHttpTransportConfigFromEnv = (env: NodeJS.ProcessEnv): HttpTransportConfig => ({
-  // Cloud platforms (Railway, Render, Fly, etc.) inject PORT; bind all interfaces
-  // by default so the container is reachable unless MCP_HOST is set explicitly.
-  host: env.MCP_HOST || (env.PORT ? '0.0.0.0' : 'localhost'),
+  // An injected PORT must never silently publish seller tools to every interface.
+  host: env.MCP_HOST || '127.0.0.1',
   port: Number(env.MCP_PORT) || Number(env.PORT) || 3000,
   oauth: {
     authServerUrl: env.OAUTH_AUTH_SERVER_URL ?? 'http://localhost:8080/realms/master',
@@ -107,6 +110,10 @@ export const createHttpTransportConfigFromEnv = (env: NodeJS.ProcessEnv): HttpTr
   corsOrigins: parseCorsOrigins(env.MCP_CORS_ORIGINS),
   projectRoot: getProjectRoot(),
   staticAuthToken: env.MCP_AUTH_TOKEN,
+  allowedHosts: (env.MCP_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean),
 });
 
 /**
@@ -121,7 +128,7 @@ export const createHttpTransportConfigFromEnv = (env: NodeJS.ProcessEnv): HttpTr
  * ```
  */
 export const getHttpServerUrl = (config: Pick<HttpTransportConfig, 'host' | 'port'>): string =>
-  `http://${config.host}:${config.port}`;
+  `http://${config.host.includes(':') && !config.host.startsWith('[') ? `[${config.host}]` : config.host}:${config.port}`;
 
 /**
  * Resolve the OAuth authorization-server metadata endpoint for the configured issuer.
@@ -193,7 +200,9 @@ async function createAuthMiddleware(
     const staticToken = config.staticAuthToken;
     serverLogger.info('Static bearer auth enabled via MCP_AUTH_TOKEN.');
     return (request, response, next) => {
-      if (request.headers.authorization === `Bearer ${staticToken}`) {
+      const supplied = Buffer.from(request.headers.authorization ?? '');
+      const expected = Buffer.from(`Bearer ${staticToken}`);
+      if (supplied.length === expected.length && timingSafeEqual(supplied, expected)) {
         next();
         return;
       }
@@ -205,8 +214,9 @@ async function createAuthMiddleware(
   }
 
   if (!config.authEnabled) {
-    serverLogger.warn('OAuth is disabled. Server running in unauthenticated mode.');
-    return;
+    throw new Error(
+      'HTTP MCP requires OAuth or MCP_AUTH_TOKEN. Use STDIO for local access without HTTP authentication.',
+    );
   }
 
   serverLogger.info('Initializing OAuth token verifier...');
@@ -259,6 +269,54 @@ function sendInvalidSession(response: Response): void {
   });
 }
 
+/** Bind a session to the authenticated identity, falling back to a token fingerprint. */
+export const getHttpSessionPrincipal = (request: AuthenticatedRequest): string => {
+  const identity = request.auth?.subject
+    ? JSON.stringify([request.auth.clientId, request.auth.subject])
+    : request.headers.authorization;
+  if (!identity) throw new Error('Cannot create a session without an authenticated principal.');
+  return createHash('sha256').update(identity).digest('hex');
+};
+
+const originAllowed = (origin: string, origins: HttpTransportConfig['corsOrigins']): boolean =>
+  origins.some((allowed) => {
+    if (typeof allowed === 'string') return allowed === origin;
+    allowed.lastIndex = 0;
+    return allowed.test(origin);
+  });
+
+/** CORS headers alone do not block requests. Reject hostile Host/Origin values before routing. */
+const createNetworkBoundary = (config: HttpTransportConfig): RequestHandler => {
+  const allowedHosts = new Set([
+    'localhost',
+    '127.0.0.1',
+    '[::1]',
+    ...(config.allowedHosts ?? []).map((host) => host.toLowerCase()),
+  ]);
+  if (!['0.0.0.0', '::', '[::]'].includes(config.host)) allowedHosts.add(config.host);
+  return (request, response, next) => {
+    let hostname: string;
+    try {
+      const hostHeader = request.headers.host;
+      if (!hostHeader || /[\s/@\\]/.test(hostHeader)) throw new Error('Invalid Host header');
+      hostname = new URL(`http://${hostHeader}`).hostname;
+    } catch {
+      response.status(403).json({ error: 'invalid_host' });
+      return;
+    }
+    if (!allowedHosts.has(hostname)) {
+      response.status(403).json({ error: 'invalid_host' });
+      return;
+    }
+    const origin = request.headers.origin;
+    if (origin !== undefined && !originAllowed(origin, config.corsOrigins)) {
+      response.status(403).json({ error: 'invalid_origin' });
+      return;
+    }
+    next();
+  };
+};
+
 /**
  * Create the Express app that serves OAuth metadata and streamable HTTP MCP sessions.
  *
@@ -273,17 +331,40 @@ function sendInvalidSession(response: Response): void {
 export const createHttpMcpApp = async (
   config: HttpTransportConfig,
 ): Promise<express.Application> => {
+  if (!(config.staticAuthToken || config.authEnabled)) {
+    throw new Error('HTTP MCP requires OAuth or MCP_AUTH_TOKEN. Unauthenticated HTTP is disabled.');
+  }
+  if (config.staticAuthToken && config.staticAuthToken.length < 32) {
+    throw new Error(
+      'MCP_AUTH_TOKEN must contain at least 32 characters. Generate a random token locally.',
+    );
+  }
+  if (!isLoopbackHost(config.host)) {
+    throw new Error(
+      'This fork only supports loopback HTTP binding. Use 127.0.0.1 or ::1; remote listeners are disabled.',
+    );
+  }
+  if (config.corsOrigins.some((origin) => origin === '*')) {
+    throw new Error(
+      'Wildcard MCP_CORS_ORIGINS is disabled. Configure exact trusted browser origins.',
+    );
+  }
   const app = express();
   const serverUrl = getHttpServerUrl(config);
   const ebayConfig = config.ebayConfig ?? getEbayConfig();
 
+  app.disable('x-powered-by');
+  app.set('trust proxy', false);
+  app.use(createNetworkBoundary(config));
   app.use(
     cors({
       origin: config.corsOrigins,
       exposedHeaders: ['Mcp-Session-Id'],
     }),
   );
-  app.use(express.json());
+  // MCP JSON does not require compression. Reject encoded bodies before a
+  // decompression stream is created (also blocks CVE-2026-111181's attack path).
+  app.use(express.json({ limit: '1mb', inflate: false }));
   app.use(helmet({ xPoweredBy: false }));
   app.use(createRequestLogger());
   app.use('/icons', express.static(join(config.projectRoot, 'public', 'icons')));
@@ -309,20 +390,29 @@ export const createHttpMcpApp = async (
   });
 
   const authMiddleware = await createAuthMiddleware(config, serverUrl);
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const transports = new Map<
+    string,
+    { transport: StreamableHTTPServerTransport; principal: string }
+  >();
 
   const mcpPostHandler = async (request: Request, response: Response): Promise<void> => {
+    const principal = getHttpSessionPrincipal(request as AuthenticatedRequest);
     const sessionHeader = request.headers['mcp-session-id'];
     const sessionId = typeof sessionHeader === 'string' ? sessionHeader : undefined;
     let transport: StreamableHTTPServerTransport;
 
     if (sessionId && transports.has(sessionId)) {
-      transport = transports.get(sessionId)!;
+      const session = transports.get(sessionId)!;
+      if (session.principal !== principal) {
+        response.status(403).json({ error: 'session_principal_mismatch' });
+        return;
+      }
+      transport = session.transport;
     } else if (!sessionId && isInitializeRequest(request.body)) {
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (initializedSessionId) => {
-          transports.set(initializedSessionId, transport);
+          transports.set(initializedSessionId, { transport, principal });
           serverLogger.info(`New MCP session initialized: ${initializedSessionId}`);
         },
       });
@@ -360,7 +450,12 @@ export const createHttpMcpApp = async (
       return;
     }
 
-    const transport = transports.get(sessionId)!;
+    const session = transports.get(sessionId)!;
+    if (session.principal !== getHttpSessionPrincipal(request as AuthenticatedRequest)) {
+      response.status(403).json({ error: 'session_principal_mismatch' });
+      return;
+    }
+    const { transport } = session;
     await transport.handleRequest(request, response);
   };
 

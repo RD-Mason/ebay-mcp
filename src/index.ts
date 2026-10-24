@@ -2,6 +2,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { validateEnvironmentConfig } from '@/config/environment.js';
 import { createEbayMcpRuntime, type EbayMcpRuntime } from '@/mcp/runtime.js';
+import { MAX_MCP_INPUT_BYTES } from '@/mcp/inputGuard.js';
 import { runDiagnostics } from '@/scripts/diagnostics.js';
 import { runSetup } from '@/scripts/setup.js';
 import { runSkillsWizard } from '@/scripts/skills.js';
@@ -121,7 +122,9 @@ class EbayMcpServer {
       });
     }
 
-    const transport = new StdioServerTransport();
+    const transport = new StdioServerTransport(process.stdin, process.stdout, {
+      maxBufferSize: MAX_MCP_INPUT_BYTES + 1,
+    });
     await this.runtime.server.connect(transport);
     serverLogger.info('eBay API MCP Server running on stdio');
   }

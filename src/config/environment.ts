@@ -1,4 +1,3 @@
-import { config } from 'dotenv';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { CREDENTIAL_ENV_PATH } from '@/config/credentialFile.js';
@@ -8,13 +7,18 @@ import { getToolGatingConfigError } from '@/config/toolFamilies.js';
 import { getMediaAccessConfig } from '@/config/mediaAccess.js';
 import { productionScopes, sandboxScopes } from '@/config/oauthScopes.js';
 import { getVersion } from '@/utils/version.js';
+import { getErrorMessage } from '@/utils/errors.js';
+import { readEnvFileSecure } from '@/utils/envFile.js';
+import { validateLocalProxyUrl } from '@/config/networkPolicy.js';
 import { Effect, Either } from 'effect';
 import process from 'node:process';
 
 // Load .env from the package root (two levels up from src/config/), not process.cwd().
 // MCP servers inherit cwd from the host (e.g. Claude Code's project dir), so
 // process.cwd() may point to an unrelated project with a different .env.
-config({ path: CREDENTIAL_ENV_PATH, quiet: true });
+for (const [name, envValue] of Object.entries(readEnvFileSecure(CREDENTIAL_ENV_PATH))) {
+  if (process.env[name] === undefined) process.env[name] = envValue;
+}
 
 const writeConfigDiagnostic = (message: string): void => {
   process.stderr.write(`[eBay MCP] ${message}\n`);
@@ -126,6 +130,13 @@ export const getKnownScopes = (environment: EbayEnvironment): string[] => [
 /** Environment variable naming the exact OAuth scopes the consent URL should request. */
 export const OAUTH_SCOPES_ENV = 'EBAY_OAUTH_SCOPES';
 
+/** Consent starts with stock/store reads; the full scope table is reference data only. */
+export const DEFAULT_REQUESTED_SCOPES = [
+  'https://api.ebay.com/oauth/api_scope',
+  'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
+  'https://api.ebay.com/oauth/api_scope/sell.stores.readonly',
+] as const;
+
 /** Shape every eBay OAuth scope shares; anything else would corrupt the query string. */
 const SCOPE_PATTERN = /^https:\/\/api\.ebay\.com\/oauth\/[\w./-]+$/;
 
@@ -150,13 +161,16 @@ export const getRequestedScopes = (
   environment: EbayEnvironment,
   env: NodeJS.ProcessEnv = process.env,
 ): string[] => {
+  const safeDefaults = DEFAULT_REQUESTED_SCOPES.filter((scope) =>
+    getDefaultScopes(environment).includes(scope),
+  );
   const configured = (env[OAUTH_SCOPES_ENV] ?? '')
     .split(/[\s,]+/)
     .map((scope) => scope.trim())
     .filter((scope) => scope.length > 0);
 
   if (configured.length === 0) {
-    return getDefaultScopes(environment);
+    return safeDefaults;
   }
 
   // A scope carrying `&` or `?` would smuggle extra parameters into the
@@ -169,7 +183,7 @@ export const getRequestedScopes = (
     );
   }
 
-  return wellFormed.length > 0 ? wellFormed : getDefaultScopes(environment);
+  return wellFormed.length > 0 ? wellFormed : safeDefaults;
 };
 
 /**
@@ -411,6 +425,7 @@ export const getTradingSiteId = (): string => {
  */
 export const getBaseUrl = (environment: EbayEnvironment, overrideBaseUrl?: string): string => {
   if (overrideBaseUrl) {
+    validateLocalProxyUrl(overrideBaseUrl);
     return overrideBaseUrl;
   }
   return environment === 'production' ? 'https://api.ebay.com' : 'https://api.sandbox.ebay.com';
@@ -432,6 +447,7 @@ export const getIdentityBaseUrl = (
   overrideBaseUrl?: string,
 ): string => {
   if (overrideBaseUrl) {
+    validateLocalProxyUrl(overrideBaseUrl);
     return overrideBaseUrl;
   }
   return environment === 'production' ? 'https://apiz.ebay.com' : 'https://apiz.sandbox.ebay.com';
@@ -450,6 +466,7 @@ export const getIdentityBaseUrl = (
  */
 export const getMediaBaseUrl = (environment: EbayEnvironment, overrideBaseUrl?: string): string => {
   if (overrideBaseUrl) {
+    validateLocalProxyUrl(overrideBaseUrl);
     return overrideBaseUrl;
   }
   return environment === 'production' ? 'https://apim.ebay.com' : 'https://apim.sandbox.ebay.com';
@@ -471,13 +488,11 @@ export const getClientRegistrationBaseUrl = (
   overrideBaseUrl?: string,
 ): string => {
   if (overrideBaseUrl) {
+    validateLocalProxyUrl(overrideBaseUrl);
     return overrideBaseUrl;
   }
   return environment === 'production' ? 'https://tppz.ebay.com' : 'https://tppz.sandbox.ebay.com';
 };
-
-/** Hosts treated as loopback when deciding whether a cleartext base URL is safe. */
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
 
 /**
  * Parsed and validated proxy/runtime auth overrides sourced from the `EBAY_MCP_*`
@@ -508,11 +523,9 @@ export interface ProxyAuthConfig {
  *
  * Normalization strips a trailing slash from the base URL so path concatenation
  * (`${base}${'/sell/...'}`) never yields a double slash. An unparseable URL is a
- * fatal error (fail loud at the boundary) rather than a silent fallback to
- * `api.ebay.com`. Two non-fatal warnings guard the footguns: disabling auth without
- * a base URL (requests would hit real eBay unauthenticated), and pointing the base
- * URL at a plaintext `http://` non-loopback host while auth is still on (real eBay
- * tokens would traverse the wire in cleartext).
+ * fatal error rather than a silent fallback. Only explicitly configured loopback
+ * proxies are supported; remote hosts and credential-bearing URLs are rejected.
+ * Disabling auth without a valid local proxy is also a fatal configuration error.
  *
  * @returns Parsed proxy auth configuration and startup diagnostics.
  * @example
@@ -528,7 +541,6 @@ export const getProxyAuthConfig = (): ProxyAuthConfig => {
   const infos: string[] = [];
 
   let apiBaseUrl: string | undefined;
-  let parsedBaseUrl: URL | undefined;
   if (rawBaseUrl) {
     const parsed = Effect.runSync(
       Effect.either(
@@ -540,8 +552,12 @@ export const getProxyAuthConfig = (): ProxyAuthConfig => {
     );
 
     if (Either.isRight(parsed)) {
-      parsedBaseUrl = parsed.right;
-      apiBaseUrl = rawBaseUrl.replace(/\/+$/, '');
+      try {
+        validateLocalProxyUrl(rawBaseUrl);
+        apiBaseUrl = rawBaseUrl.replace(/\/+$/, '');
+      } catch (cause) {
+        errors.push(getErrorMessage(cause));
+      }
     } else {
       errors.push(
         `EBAY_MCP_API_BASE_URL is not a valid URL: "${rawBaseUrl}". ` +
@@ -556,24 +572,11 @@ export const getProxyAuthConfig = (): ProxyAuthConfig => {
         'authentication is delegated to the upstream proxy.',
     );
     if (!apiBaseUrl) {
-      warnings.push(
+      errors.push(
         'EBAY_MCP_DISABLE_AUTH_HEADER=true but EBAY_MCP_API_BASE_URL is not set. Requests will be sent ' +
           'to eBay directly without authentication and will fail. Set EBAY_MCP_API_BASE_URL to your proxy.',
       );
     }
-  }
-
-  if (
-    parsedBaseUrl &&
-    !disableAuthHeader &&
-    parsedBaseUrl.protocol === 'http:' &&
-    !LOOPBACK_HOSTS.has(parsedBaseUrl.hostname)
-  ) {
-    warnings.push(
-      `EBAY_MCP_API_BASE_URL points at a plaintext http:// host (${parsedBaseUrl.host}) while authentication ` +
-        'is enabled. eBay access tokens will be transmitted unencrypted. Use https://, a loopback address, ' +
-        'or set EBAY_MCP_DISABLE_AUTH_HEADER=true.',
-    );
   }
 
   return { apiBaseUrl, disableAuthHeader, warnings, errors, infos };

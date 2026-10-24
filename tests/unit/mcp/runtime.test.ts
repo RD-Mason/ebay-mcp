@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Effect } from 'effect';
 import { getToolDefinitions } from '@/tools/index.js';
+import { createToolSecurityPolicy, isToolAllowed } from '@/mcp/securityPolicy.js';
 
 const mcpMock = vi.hoisted(() => ({
   close: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
 
 describe('MCP runtime', () => {
   beforeEach(() => {
+    vi.stubEnv('EBAY_MCP_TOOLS', 'all');
+    vi.stubEnv('EBAY_READ_ONLY', 'false');
+    vi.stubEnv('EBAY_ALLOW_WRITES', 'true');
+    vi.stubEnv('EBAY_MCP_ALLOWED_WRITE_TOOLS', 'ebay_create_inventory_location');
     mcpMock.constructor.mockClear();
     mcpMock.registerTool.mockClear();
     mcpMock.close.mockClear();
@@ -38,6 +43,7 @@ describe('MCP runtime', () => {
     mcpMock.registerResource.mockClear();
     mcpMock.getClientCapabilities.mockClear();
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   it('registers the shared tool registry on server construction', async () => {
     const { createEbayMcpRuntime } = await import('@/mcp/runtime.js');
@@ -52,7 +58,11 @@ describe('MCP runtime', () => {
 
     expect(runtime.api).toBe(api);
     expect(mcpMock.constructor).toHaveBeenCalledWith({ name: 'test-mcp', version: '0.0.0' });
-    expect(mcpMock.registerTool).toHaveBeenCalledTimes(getToolDefinitions().length);
+    expect(mcpMock.registerTool).toHaveBeenCalledTimes(
+      getToolDefinitions().filter((definition) =>
+        isToolAllowed(definition, createToolSecurityPolicy()),
+      ).length,
+    );
 
     await runtime.initializeApi();
     expect(api.initialize).toHaveBeenCalledOnce();
@@ -150,5 +160,24 @@ describe('MCP runtime', () => {
       status: 400,
       details: eBayErrors,
     });
+  });
+
+  it('blocks raw attachment bytes before JSON can disguise them as a Buffer object', async () => {
+    const { createEbayMcpRuntime } = await import('@/mcp/runtime.js');
+    const api = {
+      inventory: {
+        getInventoryItems: vi.fn(() => Effect.succeed(Buffer.from('private-customer-attachment'))),
+      },
+    };
+    createEbayMcpRuntime({ api: api as never, serverConfig: { name: 'test', version: '0' } });
+    const registered = mcpMock.registerTool.mock.calls.find(
+      ([name]) => name === 'ebay_get_inventory_items',
+    );
+    const handler = registered?.[2] as (args: Record<string, unknown>) => Promise<unknown>;
+    const output = await handler({ limit: 1 });
+    expect(output).toMatchObject({ isError: true });
+    expect(JSON.stringify(output)).toContain('Binary exports');
+    expect(JSON.stringify(output)).not.toContain('private-customer-attachment');
+    expect(JSON.stringify(output)).not.toContain('"type":"Buffer"');
   });
 });

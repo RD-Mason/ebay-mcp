@@ -18,10 +18,19 @@ describe('log redaction', () => {
       'Auth Server: http://localhost:8080/realms/master',
       'Required Scopes: mcp:tools, mcp:admin',
       'Clients must provide valid Bearer tokens to access MCP endpoints',
-      'Contact seller@example.com',
     ];
 
     expect(messages.map((message) => redactSecrets(message))).toEqual(messages);
+  });
+
+  it('redacts customer email addresses and nested customer fields', () => {
+    expect(redactSecrets('Contact seller@example.com')).toBe('Contact [REDACTED]');
+    expect(
+      redactSecretFields({ buyer: { name: 'Jane' }, shippingAddress: 'Private street' }),
+    ).toEqual({
+      buyer: '[REDACTED]',
+      shippingAddress: '[REDACTED]',
+    });
   });
 
   it('scans long messages in linear time', () => {

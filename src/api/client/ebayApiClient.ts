@@ -6,6 +6,7 @@ import {
 import { RateLimitTracker } from '@/api/client/rateLimitTracker.js';
 import { parseSigningPrivateKey, signEbayRequest } from '@/api/client/signEbayRequest.js';
 import { getBaseUrl, getIdentityBaseUrl } from '@/config/environment.js';
+import { assertEbayRequestUrl } from '@/config/networkPolicy.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import { getErrorMessage } from '@/utils/errors.js';
 import {
@@ -398,6 +399,19 @@ export class EbayApiClient {
     options: EbayRequestOptions,
   ): Effect.Effect<HttpResponse<T>, EbayClientRequestError> {
     const url = options.absolute ? endpoint : `${this.baseUrl}${endpoint}`;
+    try {
+      assertEbayRequestUrl(url, this.config.apiBaseUrl);
+    } catch (cause) {
+      return Effect.fail(
+        clientRequestError({
+          kind: 'transport',
+          method,
+          url,
+          message: getErrorMessage(cause),
+          cause,
+        }),
+      );
+    }
     return this.sendWithRetry<T>(method, url, options, {
       authRetried: false,
       serverRetries: 0,
@@ -610,8 +624,14 @@ export class EbayApiClient {
       );
     }
 
-    // 5xx — retry up to three times with exponential backoff.
-    if (error.status != null && error.status >= 500 && state.serverRetries < 3) {
+    // A failed write may already have taken effect on eBay. Only safe reads may
+    // be replayed automatically; refunds, messages and listings are never retried.
+    if (
+      ['GET', 'HEAD'].includes(method.toUpperCase()) &&
+      error.status != null &&
+      error.status >= 500 &&
+      state.serverRetries < 3
+    ) {
       const delay = 2 ** state.serverRetries * 1000;
       const delayMs = Math.min(delay, 5000);
       const nextServerRetries = state.serverRetries + 1;

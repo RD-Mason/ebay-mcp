@@ -275,9 +275,18 @@ describe('Scope Validation', () => {
   });
 
   describe('getRequestedScopes', () => {
-    it('fall back to the environment scope table when nothing is configured', () => {
-      expect(getRequestedScopes('production', {})).toEqual(getDefaultScopes('production'));
-      expect(getRequestedScopes('sandbox', {})).toEqual(getDefaultScopes('sandbox'));
+    it('requests only basic and stock/store read scopes by default', () => {
+      for (const environment of ['production', 'sandbox'] as const) {
+        const scopes = getRequestedScopes(environment, {});
+        expect(scopes).toHaveLength(3);
+        expect(scopes).toContain('https://api.ebay.com/oauth/api_scope');
+        expect(
+          scopes
+            .filter((scope) => scope !== 'https://api.ebay.com/oauth/api_scope')
+            .every((scope) => scope.endsWith('.readonly')),
+        ).toBe(true);
+        expect(scopes).not.toContain('https://api.ebay.com/oauth/api_scope/sell.fulfillment');
+      }
     });
 
     it('request exactly the configured scopes, split on spaces or commas', () => {
@@ -306,7 +315,7 @@ describe('Scope Validation', () => {
     it('keep the defaults when every configured entry is unusable', () => {
       const scopes = getRequestedScopes('sandbox', { EBAY_OAUTH_SCOPES: 'nonsense' });
 
-      expect(scopes).toEqual(getDefaultScopes('sandbox'));
+      expect(scopes).toEqual(getRequestedScopes('sandbox', {}));
     });
 
     it('build the authorization URL from the configured scopes', () => {

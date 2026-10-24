@@ -3,7 +3,13 @@ import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { EbaySellerApi } from '@/api/ebaySellerApi.js';
 import { getEbayConfig, mcpConfig } from '@/config/environment.js';
 import { resolveToolGatingMode } from '@/config/toolFamilies.js';
-import { isReadOnlyModeEnabled, isReadOnlyTool } from '@/mcp/readOnlyFilter.js';
+import { guardMcpTransport } from '@/mcp/inputGuard.js';
+import {
+  assertSafeToolResult,
+  createToolSecurityPolicy,
+  isToolAllowed,
+  type ToolSecurityPolicy,
+} from '@/mcp/securityPolicy.js';
 import {
   createToolGatingController,
   DYNAMIC_MODE_INSTRUCTIONS,
@@ -14,6 +20,7 @@ import { buildUiToolResult, createUiBridge, type UiBridge } from '@/mcp/uiBridge
 import { getToolEntries, type ToolEntry } from '@/tools/registry.js';
 import { getEbayErrorDetails } from '@/utils/errors.js';
 import { serverLogger, toolLogger } from '@/utils/logger.js';
+import { sanitizeToolResultForModel } from '@/utils/privacy.js';
 import { Effect } from 'effect';
 
 type ToolArgs = Record<string, unknown>;
@@ -85,6 +92,7 @@ function registerTool(
   entry: ToolEntry,
   logToolExecution: boolean,
   ui: UiBridge,
+  policy: ToolSecurityPolicy,
 ): RegisteredTool {
   const { definition, handler } = entry;
 
@@ -99,35 +107,57 @@ function registerTool(
     },
     async (args: ToolArgs) => {
       if (logToolExecution) {
-        toolLogger.debug(`Executing tool: ${definition.name}`, { args });
+        toolLogger.debug(`Executing tool: ${definition.name}`);
       }
 
       return await Effect.runPromise(
         Effect.tryPromise({
-          try: async () => handler(api, args),
+          try: async () => {
+            if (!isToolAllowed(definition, policy)) {
+              throw new Error(`Tool ${definition.name} is denied by the local security policy.`);
+            }
+            const handlerOutput = await handler(api, args);
+            assertSafeToolResult(handlerOutput, policy);
+            return handlerOutput;
+          },
           catch: (error) => error,
         }).pipe(
-          Effect.map((handlerOutput) => {
-            if (logToolExecution) {
-              toolLogger.debug(`Tool ${definition.name} completed successfully`);
-            }
+          Effect.flatMap((handlerOutput) =>
+            Effect.try({
+              try: () => {
+                if (logToolExecution) {
+                  toolLogger.debug(`Tool ${definition.name} completed successfully`);
+                }
 
-            if (entry.formatResult) {
-              return entry.formatResult(handlerOutput, args);
-            }
-
-            return ui.shouldRender(entry)
-              ? buildUiToolResult(entry.ui, handlerOutput)
-              : formatToolSuccess(handlerOutput);
-          }),
+                const toolResult = entry.formatResult
+                  ? entry.formatResult(handlerOutput, args)
+                  : ui.shouldRender(entry)
+                    ? buildUiToolResult(entry.ui, sanitizeToolResultForModel(handlerOutput))
+                    : formatToolSuccess(handlerOutput);
+                assertSafeToolResult(toolResult, policy);
+                return sanitizeToolResultForModel(toolResult);
+              },
+              catch: (error) => error,
+            }),
+          ),
           Effect.catchAll((error) => {
             if (logToolExecution) {
               toolLogger.error(`Tool ${definition.name} failed`, {
-                error: getEbayErrorDetails(error).message,
+                status: getEbayErrorDetails(error).status,
               });
             }
 
-            return Effect.succeed(formatToolFailure(error));
+            const failureResult = sanitizeToolResultForModel(formatToolFailure(error));
+            try {
+              assertSafeToolResult(failureResult, policy);
+              return Effect.succeed(failureResult);
+            } catch {
+              return Effect.succeed(
+                formatToolFailure(
+                  new Error('Tool failed; error details exceeded the local output safety limit.'),
+                ),
+              );
+            }
           }),
         ),
       );
@@ -154,6 +184,7 @@ export const createEbayMcpRuntime = (options: EbayMcpRuntimeOptions = {}): EbayM
   const api = options.api ?? new EbaySellerApi(getEbayConfig());
   const serverInfo = options.serverConfig ?? mcpConfig;
   const mode = resolveToolGatingMode();
+  const policy = createToolSecurityPolicy();
 
   // Instructions are set only in dynamic mode so the agent knows the catalogue is
   // hidden behind the discovery tools; default/static modes keep the handshake
@@ -162,6 +193,8 @@ export const createEbayMcpRuntime = (options: EbayMcpRuntimeOptions = {}): EbayM
     mode.kind === 'dynamic'
       ? new McpServer(serverInfo, { instructions: DYNAMIC_MODE_INSTRUCTIONS })
       : new McpServer(serverInfo);
+  const connect = server.connect.bind(server);
+  server.connect = (transport) => connect(guardMcpTransport(transport));
 
   const ui = createUiBridge(server, import.meta.url);
 
@@ -176,18 +209,16 @@ export const createEbayMcpRuntime = (options: EbayMcpRuntimeOptions = {}): EbayM
         })()
       : allEntries;
 
-  // Optional second gate: drop any non-read-only tools after family selection so
-  // EBAY_READ_ONLY composes with all / static / dynamic modes.
-  if (isReadOnlyModeEnabled()) {
-    entries = entries.filter((entry) => isReadOnlyTool(entry.definition));
-    serverLogger.info(`EBAY_READ_ONLY: filtered to ${entries.length} read-only tools`);
-  }
+  entries = entries.filter((entry) => isToolAllowed(entry.definition, policy));
+  serverLogger.info(
+    `Local security policy: ${entries.length} tools; writes ${policy.readOnly ? 'disabled' : 'allowlisted'}`,
+  );
 
   const handles = new Map<string, RegisteredTool>();
   for (const entry of entries) {
     handles.set(
       entry.definition.name,
-      registerTool(server, api, entry, options.logToolExecution ?? false, ui),
+      registerTool(server, api, entry, options.logToolExecution ?? false, ui, policy),
     );
   }
 

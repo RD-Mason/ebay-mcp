@@ -5,12 +5,15 @@
  * with the eBay MCP server settings.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir, platform } from 'os';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir, platform } from 'node:os';
 import { Effect, Either } from 'effect';
 import { getErrorMessage } from './errors.js';
 import { setupLogger } from './logger.js';
+import { localClientConfig } from './localClientConfig.js';
+import { writePrivateTextFileSecure } from './envFile.js';
+import process from 'node:process';
 
 /**
  * Detection result for an MCP-capable client configuration location.
@@ -353,10 +356,10 @@ const writeJSONConfig = (path: string, config: Record<string, unknown>): void =>
   // Ensure directory exists
   const dir = dirname(path);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
-  writeFileSync(path, JSON.stringify(config, null, 2), 'utf-8');
+  writePrivateTextFileSecure(path, JSON.stringify(config, null, 2));
 };
 
 const runClientConfigurator = (clientLabel: string, configure: () => void): boolean => {
@@ -397,7 +400,7 @@ const hasMcpServerConfig = (configPath: string): boolean => {
   const config = readJSONConfig(configPath);
   const mcpServers = config.mcpServers as Record<string, MCPServerConfig> | undefined;
 
-  return !!mcpServers?.['ebay-mcp-server'];
+  return Boolean(mcpServers?.['ebay-mcp-server']);
 };
 
 /**
@@ -417,10 +420,7 @@ export const configureClaudeDesktop = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -444,10 +444,7 @@ export const configureCline = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -488,14 +485,9 @@ export const configureContinue = (projectRoot: string): boolean => {
     const mcpServers = experimental.modelContextProtocolServers as MCPServerConfig[];
 
     // Check if eBay server already exists
-    const existingIndex = mcpServers.findIndex(
-      (server) => server.command === 'node' && server.args?.[0]?.includes('ebay-mcp'),
-    );
+    const existingIndex = mcpServers.findIndex((server) => server.args?.[0]?.includes('ebay-mcp'));
 
-    const serverConfig: MCPServerConfig = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    const serverConfig: MCPServerConfig = localClientConfig(projectRoot);
 
     if (existingIndex >= 0) {
       mcpServers[existingIndex] = serverConfig;
@@ -536,8 +528,9 @@ export const configureZed = (projectRoot: string): boolean => {
     // Add or update eBay MCP server configuration
     contextServers['ebay-mcp-server'] = {
       command: {
-        path: 'node',
-        args: [join(projectRoot, 'build', 'index.js')],
+        path: process.execPath,
+        args: localClientConfig(projectRoot).args,
+        env: localClientConfig(projectRoot).env,
       },
       settings: {},
     };
@@ -566,10 +559,7 @@ export const configureCursor = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -593,10 +583,7 @@ export const configureWindsurf = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -620,10 +607,7 @@ export const configureRooCode = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -649,10 +633,7 @@ export const configureClaudeCode = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -676,10 +657,7 @@ export const configureAmazonQ = (projectRoot: string): boolean => {
     const mcpServers = ensureMcpServersConfig(config);
 
     // Add or update eBay MCP server configuration
-    mcpServers['ebay-mcp-server'] = {
-      command: 'node',
-      args: [join(projectRoot, 'build', 'index.js')],
-    };
+    mcpServers['ebay-mcp-server'] = localClientConfig(projectRoot);
 
     config.mcpServers = mcpServers;
     writeJSONConfig(configPath, config);
@@ -734,134 +712,40 @@ export const configureLLMClient = (clientName: string, projectRoot: string): boo
  * ```
  */
 export const getManualConfigInstructions = (clientName: string, projectRoot: string): string => {
-  const buildPath = join(projectRoot, 'build', 'index.js');
-
-  switch (clientName) {
-    case 'claude':
-      return `
-Add this to ${getClaudeConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
+  const serverConfig = localClientConfig(projectRoot);
+  const paths: Record<string, () => string> = {
+    claude: getClaudeConfigPath,
+    cline: getClineConfigPath,
+    continue: getContinueConfigPath,
+    zed: getZedConfigPath,
+    cursor: getCursorConfigPath,
+    windsurf: getWindsurfConfigPath,
+    roocode: getRooCodeConfigPath,
+    claudecode: getClaudeCodeConfigPath,
+    amazonq: getAmazonQConfigPath,
+  };
+  const getConfigPath = paths[clientName];
+  if (!getConfigPath) {
+    return 'Manual configuration instructions not available for this client.';
   }
-}`;
-
-    case 'cline':
-      return `
-Add this to ${getClineConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    case 'continue':
-      return `
-Add this to ${getContinueConfigPath()}:
-
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "command": "node",
-        "args": ["${buildPath}"]
-      }
-    ]
-  }
-}`;
-
-    case 'zed':
-      return `
-Add this to ${getZedConfigPath()}:
-
-{
-  "context_servers": {
-    "ebay-mcp-server": {
-      "command": {
-        "path": "node",
-        "args": ["${buildPath}"]
-      },
-      "settings": {}
-    }
-  }
-}`;
-
-    case 'cursor':
-      return `
-Add this to ${getCursorConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    case 'windsurf':
-      return `
-Add this to ${getWindsurfConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    case 'roocode':
-      return `
-Add this to ${getRooCodeConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    case 'claudecode':
-      return `
-Add this to ${getClaudeCodeConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    case 'amazonq':
-      return `
-Add this to ${getAmazonQConfigPath()}:
-
-{
-  "mcpServers": {
-    "ebay-mcp-server": {
-      "command": "node",
-      "args": ["${buildPath}"]
-    }
-  }
-}`;
-
-    default:
-      return 'Manual configuration instructions not available for this client.';
-  }
+  const configDocument =
+    clientName === 'continue'
+      ? { experimental: { modelContextProtocolServers: [serverConfig] } }
+      : clientName === 'zed'
+        ? {
+            context_servers: {
+              'ebay-mcp-server': {
+                command: {
+                  path: serverConfig.command,
+                  args: serverConfig.args,
+                  env: serverConfig.env,
+                },
+                settings: {},
+              },
+            },
+          }
+        : { mcpServers: { 'ebay-mcp-server': serverConfig } };
+  return `Add this to ${getConfigPath()}:\n\n${JSON.stringify(configDocument, null, 2)}`;
 };
 
 /**
@@ -889,7 +773,9 @@ export const verifyClientConfiguration = (clientName: string, _projectRoot: stri
 
             case 'continue': {
               const configPath = getContinueConfigPath();
-              if (!existsSync(configPath)) return false;
+              if (!existsSync(configPath)) {
+                return false;
+              }
 
               const config = readJSONConfig(configPath);
               const experimental = config.experimental as Record<string, unknown> | undefined;
@@ -897,17 +783,21 @@ export const verifyClientConfiguration = (clientName: string, _projectRoot: stri
                 | MCPServerConfig[]
                 | undefined;
 
-              return !!mcpServers?.some((server) => server.args?.[0]?.includes('ebay-mcp-server'));
+              return Boolean(
+                mcpServers?.some((server) => server.args?.[0]?.includes('ebay-mcp-server')),
+              );
             }
 
             case 'zed': {
               const configPath = getZedConfigPath();
-              if (!existsSync(configPath)) return false;
+              if (!existsSync(configPath)) {
+                return false;
+              }
 
               const config = readJSONConfig(configPath);
               const contextServers = config.context_servers as Record<string, unknown> | undefined;
 
-              return !!contextServers?.['ebay-mcp-server'];
+              return Boolean(contextServers?.['ebay-mcp-server']);
             }
 
             case 'cursor':

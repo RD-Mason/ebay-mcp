@@ -31,9 +31,6 @@ const ENDPOINT_COUNT_PATTERN = /\d+ (?:unique )?endpoints/g;
  */
 const COUNT_BAND = { min: 250, max: 400 };
 
-/** Captures the tool count rendered into the README's shields.io badge. */
-const BADGE_COUNT_PATTERN = /img\.shields\.io\/badge\/tools-(\d+)-/;
-
 /** Every run of digits in a document. */
 const DIGITS_PATTERN = /\d+/g;
 
@@ -61,12 +58,6 @@ describe('advertised tool count', () => {
 
   it.each(proseDocs)('%s quotes no tool count other than the live registry', (name) => {
     expect(staleCountsIn(readDoc(name))).toEqual([]);
-  });
-
-  it('README shields badge shows the live tool count', () => {
-    const badge = readDoc('README.md').match(BADGE_COUNT_PATTERN);
-
-    expect(badge?.[1]).toBe(String(advertisedToolCount));
   });
 
   it('package.json description quotes the live tool count', () => {

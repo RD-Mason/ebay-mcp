@@ -31,11 +31,13 @@ import {
   getCachedUpdateNotice,
   getUpdateInfo,
   getVersion,
+  getPackageName,
 } from '@/utils/version.js';
 
 const CURRENT = getVersion();
 
 beforeEach(() => {
+  vi.stubEnv('EBAY_MCP_CHECK_UPDATES', 'true');
   mockUpdate = undefined;
   lastConstructorOptions = {};
   notify.mockClear();
@@ -44,9 +46,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('checkForUpdates', () => {
+  it('does not instantiate a notifier or contact the registry without explicit opt-in', async () => {
+    vi.stubEnv('EBAY_MCP_CHECK_UPDATES', undefined);
+    checkForUpdates();
+    expect(getCachedUpdateNotice()).toBeUndefined();
+    expect(await getUpdateInfo()).toBeUndefined();
+    expect(lastConstructorOptions).toEqual({});
+    expect(fetchInfo).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
   it('opts into npm-script contexts so `npm run setup` is not silenced', () => {
     checkForUpdates();
 
@@ -68,7 +80,7 @@ describe('getCachedUpdateNotice', () => {
     const notice = getCachedUpdateNotice();
 
     expect(notice).toBe(
-      `Update available ${CURRENT} → 99.0.0 — run \`npm i -g ebay-mcp\` to update`,
+      `Upstream update available ${CURRENT} → 99.0.0; review it in your fork before updating this checkout.`,
     );
   });
 
@@ -92,7 +104,7 @@ describe('getUpdateInfo', () => {
     const updateInfo = await getUpdateInfo();
 
     expect(fetchInfo).toHaveBeenCalled();
-    expect(updateInfo).toEqual({ current: CURRENT, latest: '99.0.0', name: 'ebay-mcp' });
+    expect(updateInfo).toEqual({ current: CURRENT, latest: '99.0.0', name: getPackageName() });
   });
 
   it('returns undefined when the latest version equals the current one', async () => {

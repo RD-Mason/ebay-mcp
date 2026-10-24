@@ -20,6 +20,7 @@ import { getErrorMessage } from '@/utils/errors.js';
 import { describeHttpError, httpRequestEffect, type HttpRequestOptions } from '@/utils/http.js';
 import { authLogger } from '@/utils/logger.js';
 import { Data, Effect, Either } from 'effect';
+import process from 'node:process';
 
 /** OAuth operation names reported by {@link EbayOAuthError}. */
 type OAuthOperation =
@@ -28,7 +29,8 @@ type OAuthOperation =
   | 'getOrRefreshAppAccessToken'
   | 'exchangeCodeForToken'
   | 'refreshUserToken'
-  | 'setUserTokens';
+  | 'setUserTokens'
+  | 'clearAllTokens';
 
 /** Tagged failure returned by migrated OAuth token Effects. */
 export class EbayOAuthError extends Data.TaggedError('EbayOAuthError')<{
@@ -285,6 +287,21 @@ export class EbayOAuthClient {
     refreshTokenExpiry?: number,
   ): Effect.Effect<void, EbayOAuthError> =>
     Effect.gen(this, function* () {
+      if (
+        typeof accessToken !== 'string' ||
+        typeof refreshToken !== 'string' ||
+        !accessToken ||
+        !refreshToken ||
+        /[\r\n\0]/.test(accessToken) ||
+        /[\r\n\0]/.test(refreshToken)
+      ) {
+        return yield* Effect.fail(
+          new EbayOAuthError({
+            operation: 'setUserTokens',
+            message: 'OAuth tokens must be non-empty single-line strings',
+          }),
+        );
+      }
       this.userTokens = createStoredUserTokens({
         config: this.config,
         accessToken,
@@ -459,7 +476,7 @@ export class EbayOAuthClient {
       this.config = {
         ...this.config,
         accessToken: tokenData.access_token,
-        refreshToken: refreshToken,
+        refreshToken,
       };
 
       return tokenData;
@@ -569,11 +586,13 @@ export class EbayOAuthClient {
   }
 
   /**
-   * Clear all authentication tokens from memory.
+   * Clear OAuth tokens from memory, runtime config and the local credential file.
    *
-   * To persist this change, remove `EBAY_USER_REFRESH_TOKEN` from `.env`.
+   * Application keys remain so public application-token calls are still possible.
+   * This only removes local credentials: revoke the third-party authorization in
+   * eBay to invalidate copies held by another process, client config or backup.
    *
-   * @returns Nothing; the in-memory token cache is cleared synchronously.
+   * @returns Nothing; throws if the local credential file cannot be cleared.
    *
    * @example
    * ```ts
@@ -584,6 +603,17 @@ export class EbayOAuthClient {
     this.appAccessToken = null;
     this.appAccessTokenExpiry = 0;
     this.userTokens = null;
+    this.config = { ...this.config, accessToken: '', refreshToken: '', appAccessToken: '' };
+    delete process.env.EBAY_USER_ACCESS_TOKEN;
+    delete process.env.EBAY_USER_REFRESH_TOKEN;
+    delete process.env.EBAY_APP_ACCESS_TOKEN;
+    Effect.runSync(
+      this.credentialStore.write({
+        EBAY_USER_ACCESS_TOKEN: '',
+        EBAY_USER_REFRESH_TOKEN: '',
+        EBAY_APP_ACCESS_TOKEN: '',
+      }),
+    );
   }
 
   /**
